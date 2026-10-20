@@ -2,7 +2,6 @@
 # Let's Encrypt IP certificates (GA since Jan 2026) last ~6 days; Caddy renews them itself.
 # Set SITE_ADDRESS to the public IP and CADDYFILE=Caddyfile.ip in .env.
 {
-	email {$ACME_EMAIL}
 	servers {
 		protocols h1 h2 h3
 	}
