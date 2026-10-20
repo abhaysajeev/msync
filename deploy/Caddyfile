@@ -7,5 +7,5 @@
 }
 
 {$SITE_ADDRESS} {
-	import /etc/caddy/site.caddy
+	import /etc/msync/site.caddy
 }

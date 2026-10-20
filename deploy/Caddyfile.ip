@@ -13,6 +13,6 @@
 			profile shortlived
 		}
 	}
-	import /etc/caddy/site.caddy
+	import /etc/msync/site.caddy
 }
 
