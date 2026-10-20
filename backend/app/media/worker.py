@@ -10,6 +10,8 @@ import json
 import logging
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -78,22 +80,45 @@ def download(movie_id: str) -> None:
 
 # ---- processing ------------------------------------------------------------------------------
 
+STALL_S = 600  # no progress for this long: ffmpeg is stuck, fail the job instead of hanging
+
+
 def _run_ffmpeg(cmd: list[str], duration: float, on_progress: Callable[[float], None]) -> None:
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    last = 0.0
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        if line.startswith("out_time_us=") and duration > 0:
-            try:
-                t = int(line.split("=", 1)[1]) / 1e6
-            except ValueError:
-                continue
-            if time.time() - last > 1.0:
-                last = time.time()
-                on_progress(max(0.0, min(t / duration, 0.999)))
-    err = proc.stderr.read() if proc.stderr else ""
-    if proc.wait() != 0:
-        raise RuntimeError(err.strip().splitlines()[-1] if err.strip() else "ffmpeg failed")
+    # stderr goes to a file, never a pipe: copied MKV streams can print thousands of timestamp
+    # warnings, and an unread pipe fills at 64 KB and blocks ffmpeg forever.
+    with tempfile.TemporaryFile(mode="w+") as errf:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True)
+        last_progress = [time.monotonic()]
+        stalled = [False]
+
+        def watchdog() -> None:
+            while proc.poll() is None:
+                if time.monotonic() - last_progress[0] > STALL_S:
+                    stalled[0] = True
+                    proc.kill()
+                    return
+                time.sleep(5)
+
+        threading.Thread(target=watchdog, daemon=True).start()
+        last = 0.0
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            last_progress[0] = time.monotonic()
+            if line.startswith("out_time_us=") and duration > 0:
+                try:
+                    t = int(line.split("=", 1)[1]) / 1e6
+                except ValueError:
+                    continue
+                if time.time() - last > 1.0:
+                    last = time.time()
+                    on_progress(max(0.0, min(t / duration, 0.999)))
+        code = proc.wait()
+        if stalled[0]:
+            raise RuntimeError(f"ffmpeg made no progress for {STALL_S // 60} minutes and was stopped")
+        if code != 0:
+            errf.seek(0)
+            lines = [ln for ln in errf.read().strip().splitlines() if ln.strip()]
+            raise RuntimeError(lines[-1] if lines else "ffmpeg failed")
 
 
 def process(movie_id: str) -> None:
