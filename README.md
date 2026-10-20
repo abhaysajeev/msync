@@ -60,36 +60,59 @@ These were verified in October 2026; sources are at the end.
 ## Deploy on the VPS
 
 The VPS here is Ubuntu 24.04, 2 vCPU, 3.8 GB RAM, 84 GB disk, in Singapore, with Docker installed.
+Three scripts handle everything, and none of them touch other things already on the server.
 
-1. **Prepare the box** (as root, once): `bash tools/vps-setup.sh`.
-   It installs updates and `unattended-upgrades`, plus the compose plugin. It also adds 2 GB of swap and opens the firewall:
-   - 22/tcp, 80/tcp, 443/tcp+udp
-   - 3478/tcp+udp, 49160–49200/udp
+**1. Copy the code to the VPS** (from your computer):
+```bash
+ssh root@<VPS-IP> 'mkdir -p /srv/msync'
+git clone https://github.com/abhaysajeev/msync.git && cd msync   # or use your local copy
+rsync -az --exclude .git --exclude node_modules --exclude .venv --exclude dist --exclude .env ./ root@<VPS-IP>:/srv/msync/
+```
+Or clone directly on the VPS: `git clone https://github.com/abhaysajeev/msync.git /srv/msync`. The repo is private, so clone with a GitHub token or `gh`.
 
-   **Also check GoDaddy's own firewall** in its panel, if your plan has one, and open the same ports there.
-   Use SSH keys and disable password login (`PasswordAuthentication no` in `/etc/ssh/sshd_config`).
+**2. Check the ports, read-only:**
+```bash
+cd /srv/msync && sudo bash tools/vps/preflight.sh
+```
+It reports, without changing anything:
+- what (if anything) is already using 80/tcp, 443/tcp+udp, 3478/tcp+udp and 49160–49200/udp, naming the process or container;
+- RAM, disk, Docker and compose;
+- whether ufw is on;
+- whether Let's Encrypt is reachable and `<ip-with-dashes>.sslip.io` resolves.
 
-2. **Measure the route before trusting it.** On the VPS run `iperf3 -s`. From home run `iperf3 -c <VPS-IP> -R -t 20`, which measures VPS → you, the direction films travel.
-   Also look up the plan's **monthly bandwidth allowance** in the GoDaddy panel. Each watch costs about **2 × the film's size** in egress (both of you stream it): a 4 GB film is 8 GB.
+If a port is taken, it prints the alternative. For example, when 443 is already in use: `sudo HTTPS_PORT=8443 bash tools/vps/deploy.sh`.
 
-3. **Get the code and configure it**:
-   ```bash
-   sudo mkdir -p /srv && cd /srv && sudo git clone <your repo> msync && cd msync
-   cp .env.example .env
-   openssl rand -hex 32   # paste as SESSION_SECRET
-   openssl rand -hex 32   # paste as TURN_SECRET
-   nano .env              # SITE_ADDRESS=<ip-with-dashes>.sslip.io, PUBLIC_IP=<ip>
-   docker compose build
-   docker compose run --rm api python -m app.hashpw   # paste the printed line into .env
-   ```
+**3. Deploy:**
+```bash
+sudo bash tools/vps/deploy.sh          # → https://<ip-with-dashes>.sslip.io
+sudo bash tools/vps/deploy.sh --ip     # → https://<ip>  (Let's Encrypt IP certificate, 6-day, auto-renewed)
+```
+It writes `.env` (random secrets, your IP and site address) and asks for the host password, which is stored only as an argon2 hash. Then it builds, starts, and waits until HTTPS answers before printing the URL.
+- If ufw is active, it opens only msync's ports, tagged `msync`. A rule that already existed is left alone and never claimed.
+- If the compose plugin is missing, it installs it and records that.
 
-4. **Start**: `docker compose up -d`. Then watch the certificate arrive with `docker compose logs -f web` (look for "certificate obtained successfully").
+Re-run the same command after `git pull` to update; your `.env` and films are kept. Also open the same ports in the **GoDaddy panel firewall** if your plan has one.
 
-5. Open `https://<ip-with-dashes>.sslip.io`, sign in as host, and open **Speed test**. Have your friend open their invite link and check theirs too.
+**Measure the route** before relying on it. On the VPS run `iperf3 -s`; from home run `iperf3 -c <VPS-IP> -R -t 20`. Or use the app's **Speed test** page.
+Also check the plan's **monthly bandwidth allowance**: each watch costs about 2 × the film's size (you both stream it).
 
-Updates: `git pull && docker compose up -d --build`. Back up the `data` volume's `msync.db` if you care about room and chat history. The films can always be re-uploaded.
+**4. Remove everything:**
+```bash
+sudo bash /srv/msync/tools/vps/uninstall.sh --dry-run   # the exact list; changes nothing
+sudo bash /srv/msync/tools/vps/uninstall.sh             # type "msync" to confirm
+```
+It removes only what deploy recorded as msync's own:
+- the containers, volumes (films, database, certificates) and network of compose project `msync`;
+- the image and build-cache IDs created by msync's builds and pulls;
+- msync's ufw rules;
+- the compose plugin, if deploy installed it and nothing else uses it;
+- `/srv/msync`.
 
-**If sslip.io is ever unreachable**, set `SITE_ADDRESS=<plain IP>` and `CADDYFILE=Caddyfile.ip`, then run `docker compose up -d`. Caddy then gets a 6-day IP certificate and renews it itself. A cheap domain (a few dollars a year) is the most robust option of all: point an A record at the VPS and put it in `SITE_ADDRESS`.
+No global `docker prune` runs; other containers, images, volumes and rules are never touched. It finishes with a check that nothing of msync is left.
+This was tested in a disposable Docker sandbox: existing containers kept running, a base image shared with another project was kept, and only msync's items were removed.
+
+**If sslip.io is ever unreachable**: uninstall, then `deploy.sh --ip`, or set `SITE_ADDRESS=<IP>` and `CADDYFILE=Caddyfile.ip` in `.env` and re-run deploy.
+A cheap domain (an A record pointing at the VPS, put in `SITE_ADDRESS`) is the most robust option.
 
 ## Using it
 
