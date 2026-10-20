@@ -1,0 +1,17 @@
+.env
+data/
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.taste-skill/inspect/
+test-results/
+e2e/node_modules/
+.msync-state
+.msync-owned-images
+.msync-owned-cache
+.msync-images-before
+*.mp4
+playwright-report/
+*.egg-info/

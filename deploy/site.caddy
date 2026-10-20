@@ -1,0 +1,56 @@
+# Shared site directives, imported by Caddyfile and Caddyfile.ip.
+encode zstd gzip
+
+# --- film files: served straight from disk, after the api says this person may see them
+@media path /media/*
+handle @media {
+	forward_auth api:8000 {
+		uri /api/auth/media
+	}
+	@m3u8 path *.m3u8
+	header @m3u8 Content-Type application/vnd.apple.mpegurl
+	@m4s path *.m4s
+	header @m4s Content-Type video/iso.segment
+	@vtt path *.vtt
+	header @vtt Content-Type "text/vtt; charset=utf-8"
+	# a film id never changes content, so segments cache for good on each device
+	header Cache-Control "private, max-age=31536000, immutable"
+	root * /srv/data
+	file_server
+}
+
+# --- resumable uploads
+handle /files/* {
+	reverse_proxy tusd:8080 {
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+}
+
+# --- api and the room socket
+handle /api/* {
+	reverse_proxy api:8000
+}
+handle /ws/* {
+	reverse_proxy api:8000
+}
+
+# --- the app
+handle {
+	root * /srv/web
+	@immutable path /assets/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+	try_files {path} /index.html
+	file_server
+}
+
+header {
+	Strict-Transport-Security "max-age=31536000"
+	X-Content-Type-Options nosniff
+	Referrer-Policy same-origin
+	Permissions-Policy "camera=(self), microphone=(self), fullscreen=(self), screen-wake-lock=(self)"
+	-Server
+}

@@ -1,0 +1,12 @@
+# SITE_ADDRESS is a hostname, e.g. 203-0-113-7.sslip.io (no account needed; sslip.io resolves it
+# to that IP) or your own domain. Caddy gets and renews the Let's Encrypt certificate itself.
+{
+	email {$ACME_EMAIL}
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+{$SITE_ADDRESS} {
+	import /etc/caddy/site.caddy
+}

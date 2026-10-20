@@ -1,0 +1,104 @@
+# msync: private watch party for two.  docker compose up -d --build
+name: msync
+
+x-app: &app
+  build: ./backend
+  image: msync-api
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATA_DIR: /data
+    TURN_HOST: ${TURN_HOST:-${SITE_ADDRESS}}
+    TURN_PORT: ${TURN_PORT:-3478}
+  volumes:
+    - data:/data
+
+services:
+  api:
+    <<: *app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.media.worker"]
+    depends_on: [api]
+    # packaging runs at nice 19; cap it anyway so playback never starves on 2 vCPUs
+    cpus: 1.5
+
+  tusd:
+    image: tusproject/tusd:v2.10.1
+    restart: unless-stopped
+    user: "0:0"
+    command:
+      - -upload-dir=/data/incoming
+      - -base-path=/files/
+      - -behind-proxy
+      - -port=8080
+      - -hooks-http=http://api:8000/api/hooks/tusd
+      - -hooks-http-forward-headers=Cookie
+      - -hooks-enabled-events=pre-create,post-finish
+      - -max-size=${MAX_UPLOAD_BYTES:-60000000000}
+    volumes:
+      - data:/data
+    depends_on: [api]
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    image: msync-web
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTPS_PORT:-443}:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/${CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
+      - ./deploy/site.caddy:/etc/caddy/site.caddy:ro
+      - data:/srv/data:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, tusd]
+
+  # TURN relay for calls when the two networks cannot reach each other directly.
+  # Host networking: relaying thousands of UDP ports through Docker's proxy is slow.
+  coturn:
+    image: coturn/coturn:4.18.0
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --log-file=stdout
+      - --listening-port=${TURN_PORT:-3478}
+      - --fingerprint
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --realm=msync
+      - --external-ip=${PUBLIC_IP}
+      - --min-port=${TURN_MIN_PORT:-49160}
+      - --max-port=${TURN_MAX_PORT:-49200}
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --no-multicast-peers
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --total-quota=20
+      - --stale-nonce=600
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

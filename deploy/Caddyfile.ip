@@ -1,0 +1,19 @@
+# Alternative: HTTPS on the bare IP address, no third-party DNS at all.
+# Let's Encrypt IP certificates (GA since Jan 2026) last ~6 days; Caddy renews them itself.
+# Set SITE_ADDRESS to the public IP and CADDYFILE=Caddyfile.ip in .env.
+{
+	email {$ACME_EMAIL}
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+{$SITE_ADDRESS} {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+	import /etc/caddy/site.caddy
+}
+
