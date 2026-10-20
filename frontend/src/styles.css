@@ -281,19 +281,26 @@ td .line2 { display: block; font-size: 13px; color: var(--muted); margin-top: 2p
 /* ---------- responsive ---------- */
 @media (max-width: 860px) {
   .grid > * { grid-column: 1 / -1 !important; }
-  .room { grid-template-columns: minmax(0, 1fr); }
-  .room .poster { max-height: 180px; }
+  .room { grid-template-columns: 160px minmax(0, 1fr); }
   .canvas { padding: 20px 16px 48px; }
   .topbar-inner { padding: 0 16px; gap: 18px; }
   .title-row { flex-wrap: wrap; align-items: flex-start; }
   .hide-sm { display: none !important; }
   .table-wrap { margin: 0 -16px; padding: 0 16px; }
 }
-@media (max-width: 700px) {
+/* tablet portrait and phones: chat is a bottom sheet over the film, so the controls keep the full width */
+@media (max-width: 900px) {
   .stage.chat-open video.film { right: 0; width: 100%; }
   .stage.chat-open .bar-top, .stage.chat-open .bar-bottom { right: 0; }
   .stage.chat-open .tiles { right: 16px; }
-  .chat { top: auto; left: 0; width: 100%; height: min(62dvh, 520px); border-radius: 20px 20px 0 0; }
+  .chat { top: auto; left: 0; width: 100%; height: min(55dvh, 520px); border-radius: 20px 20px 0 0; }
+  /* the controls ride above the sheet, so mic, camera and fullscreen stay one tap away */
+  .stage.chat-open .bar-bottom { bottom: min(55dvh, 520px); padding-bottom: 12px; }
+  .stage.chat-open .tiles { bottom: calc(min(55dvh, 520px) + 140px); }
+}
+@media (max-width: 700px) {
+  .room { grid-template-columns: minmax(0, 1fr); }
+  .room .poster { max-height: 180px; }
   .tile { width: 132px; }
   .tile.self { width: 84px; }
   .tiles { bottom: 136px; }

@@ -100,6 +100,13 @@ export function Home() {
   );
 }
 
+/** The film's poster frame, or the plain tile when there is none (or it fails to load). */
+function Poster({ cls, src }: { cls: string; src?: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return <div class={cls} />;
+  return <img class={cls} src={src} alt="" loading="lazy" onError={() => setFailed(true)} />;
+}
+
 function statusWords(m: Movie): string {
   const pct = `${Math.round((m.progress || 0) * 100)}%`;
   switch (m.status) {
@@ -171,7 +178,7 @@ function RoomCard({ room, films, onChange }: { room: RoomInfo; films: Movie[]; o
   const m = room.movie;
   return (
     <article class="panel room">
-      {m?.poster ? <img class="poster" src={m.poster} alt="" loading="lazy" /> : <div class="poster" />}
+      <Poster cls="poster" src={m?.poster} />
       <div>
         <div style={{ display: "flex", gap: "12px", alignItems: "flex-start" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -455,7 +462,7 @@ function FilmRow({ m, onChange }: { m: Movie; onChange: () => void }) {
     <tr>
       <td>
         <div style={{ display: "flex", gap: "12px", alignItems: "center", minWidth: "220px" }}>
-          {m.poster ? <img class="thumb" src={m.poster} alt="" loading="lazy" /> : <div class="thumb" />}
+          <Poster cls="thumb" src={m.poster} />
           <div style={{ minWidth: 0 }}>
             <div class="name" style={{ fontWeight: 500 }}>{m.title}</div>
             <span class="line2">{tech || (m.status === "downloading" ? "Downloading" : "Not probed yet")}</span>

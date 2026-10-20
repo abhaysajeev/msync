@@ -367,7 +367,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
       {toast && !(sess.you.admin && knocks.length) && <div class="toast" role="status">{toast}</div>}
 
       {/* camera tiles */}
-      {joined && call.started && <Tiles call={cv} youName={sess.you.name} peerName={peer?.name ?? "Your friend"} you={sess.you.admin} />}
+      {joined && call.started && <Tiles call={cv} youName={sess.you.name} peerName={peer?.name ?? "your friend"} you={sess.you.admin} />}
 
       {/* bottom bar */}
       {joined && movie && (
