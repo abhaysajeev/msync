@@ -1,6 +1,7 @@
 // The watch screen. The film is the screen; everything else is an overlay that works in
 // fullscreen: transport, the sync lanes, chat, mic and camera, and the two camera tiles.
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
+import type { RefObject } from "preact";
 import { Call, type CallView } from "../call/rtc";
 import { api, type Knock, type MemberInfo, type RoomSession } from "../lib/api";
 import { speedTest } from "../lib/bw";
@@ -666,17 +667,46 @@ function Scrub({ duration, pos, buffered, onSeek }: { duration: number; pos: num
   );
 }
 
+/**
+ * Attach a camera stream to a <video> and start it. iOS Safari often leaves an autoplay
+ * element with a live stream paused (a grey tile), so play() is called explicitly, and the
+ * self view is muted as attribute and property (it carries our own mic track).
+ */
+function useStream(ref: RefObject<HTMLVideoElement>, stream: MediaStream | null, mute: boolean) {
+  useEffect(() => {
+    const v = ref.current;
+    if (!v) return;
+    if (mute) {
+      v.muted = true;
+      v.setAttribute("muted", "");
+    }
+    if (v.srcObject !== stream) v.srcObject = stream;
+    if (!stream) return;
+    const play = () => {
+      if (v.paused) v.play().catch(() => {});
+    };
+    play();
+    v.addEventListener("loadedmetadata", play);
+    // the camera track can arrive or restart after the element was set up
+    stream.addEventListener("addtrack", play);
+    document.addEventListener("visibilitychange", play);
+    return () => {
+      v.removeEventListener("loadedmetadata", play);
+      stream.removeEventListener("addtrack", play);
+      document.removeEventListener("visibilitychange", play);
+    };
+  }, [stream, ref.current]);
+}
+
 function Tiles({ call, youName, peerName, you }: { call: CallView; youName: string; peerName: string; you: boolean }) {
   const remoteRef = useRef<HTMLVideoElement>(null);
   const localRef = useRef<HTMLVideoElement>(null);
   const [off, setOff] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
-  useEffect(() => {
-    if (remoteRef.current && remoteRef.current.srcObject !== call.remote) remoteRef.current.srcObject = call.remote;
-  }, [call.remote]);
-  useEffect(() => {
-    if (localRef.current && localRef.current.srcObject !== call.local) localRef.current.srcObject = call.local;
-  }, [call.local]);
+  useStream(remoteRef, call.remote, false);
+  useStream(localRef, call.local, true);
+  // a tap is a user gesture: retry any preview the browser refused to start on its own
+  const replay = () => [remoteRef, localRef].forEach((r) => r.current?.paused && r.current.srcObject && r.current.play().catch(() => {}));
   return (
     <div class="tiles" style={{ transform: `translate(${off.x}px, ${off.y}px)` }}
       onPointerDown={(e) => {
@@ -687,7 +717,10 @@ function Tiles({ call, youName, peerName, you }: { call: CallView; youName: stri
         const d = dragRef.current;
         if (d) setOff({ x: d.ox + e.clientX - d.x, y: d.oy + e.clientY - d.y });
       }}
-      onPointerUp={() => (dragRef.current = null)}>
+      onPointerUp={() => {
+        dragRef.current = null;
+        replay();
+      }}>
       <div class={`tile${call.speaking ? " talking" : ""}`}>
         <video ref={remoteRef} autoPlay playsInline />
         {(!call.remote || !call.peerCam) && (
