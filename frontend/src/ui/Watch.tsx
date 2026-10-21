@@ -76,6 +76,9 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   const [fs, setFs] = useState(false);
   const [hud, setHud] = useState(() => new URLSearchParams(location.search).has("debug"));
   const [subIdx, setSubIdx] = useState(-1);
+  // VLC-style subtitle delay, per viewer: positive shows lines later
+  const [subDelay, setSubDelay] = useState(0);
+  const appliedDelay = useRef(new WeakMap<TextTrack, number>());
   const [filmMuted, setFilmMuted] = useState(false);
   const chatOpenRef = useRef(chatOpen);
   chatOpenRef.current = chatOpen;
@@ -282,6 +285,9 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
         case "m": call.toggleMic(); break;
         case "v": call.toggleCam(); break;
         case "d": setHud((h) => !h); break;
+        // VLC's keys: G earlier, H later, 50 ms a press
+        case "g": if (subIdx >= 0) changeDelay(subDelay - 0.05); break;
+        case "h": if (subIdx >= 0) changeDelay(subDelay + 0.05); break;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -289,12 +295,79 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   });
 
   // ---- subtitles ----
-  const subs = sess.movie?.subtitles ?? [];
+  const [subs, setSubs] = useState(sess.movie?.subtitles ?? []);
+  useEffect(() => socket.on("subtitles", (m) => {
+    if (m.movie !== sess.movie?.id) return;
+    setSubs(m.subtitles);
+    setSubIdx((i) => (i >= m.subtitles.length ? -1 : i));
+  }), [socket]);
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     Array.from(v.textTracks).forEach((t, i) => (t.mode = i === subIdx ? "showing" : "disabled"));
-  }, [subIdx, joined]);
+  }, [subIdx, joined, subs]);
+
+  const delayKey = (file?: string) => `msync:subdelay:${sess.movie?.id}:${file}`;
+  // each subtitle remembers its own delay on this device
+  useEffect(() => {
+    const f = subs[subIdx]?.file;
+    let d = 0;
+    try {
+      d = f ? Number(localStorage.getItem(delayKey(f)) || 0) : 0;
+    } catch {
+      /* private mode */
+    }
+    setSubDelay(Number.isFinite(d) ? d : 0);
+  }, [subIdx, subs]);
+
+  // shift the cues in place: instant, no reload, playback untouched
+  const applyDelay = useCallback(() => {
+    const t = videoRef.current?.textTracks[subIdx];
+    if (!t || !t.cues || t.cues.length === 0) return; // not loaded yet: the load event re-runs this
+    const delta = subDelay - (appliedDelay.current.get(t) ?? 0);
+    if (Math.abs(delta) < 1e-6) return;
+    for (const c of Array.from(t.cues)) {
+      c.startTime += delta;
+      c.endTime += delta;
+    }
+    appliedDelay.current.set(t, subDelay);
+  }, [subIdx, subDelay]);
+  useEffect(applyDelay, [applyDelay, joined]);
+  useEffect(() => {
+    const els = videoRef.current?.querySelectorAll("track") ?? [];
+    els.forEach((e) => e.addEventListener("load", applyDelay));
+    return () => els.forEach((e) => e.removeEventListener("load", applyDelay));
+  }, [applyDelay, subs]);
+
+  const changeDelay = (next: number) => {
+    const f = subs[subIdx]?.file;
+    if (!f) return;
+    const d = Math.round(next * 1000) / 1000;
+    setSubDelay(d);
+    try {
+      localStorage.setItem(delayKey(f), String(d));
+    } catch {
+      /* private mode */
+    }
+    flash(`Subtitle delay: ${fmtDelay(d)}`);
+  };
+
+  const saveDelayForBoth = async () => {
+    const f = subs[subIdx]?.file;
+    if (!f || !subDelay || !movie) return;
+    try {
+      await api.post(`/api/movies/${movie.id}/subtitles/${f}/shift`, { offset: subDelay });
+      try {
+        localStorage.removeItem(delayKey(f));
+      } catch {
+        /* fine */
+      }
+      flash("Subtitle timing saved for both of you");
+      // the server re-sends the list with a new file name; its fresh track starts at 0 delay
+    } catch (e: any) {
+      flash(e.message);
+    }
+  };
 
   const peer = members.find((m) => m.id !== sess.you.id);
   const me = members.find((m) => m.id === sess.you.id);
@@ -334,7 +407,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
       onPointerMove={wake} onPointerDown={wake}>
       <video ref={videoRef} class="film" playsInline poster={movie?.poster ?? undefined}
         muted={filmMuted}>
-        {subs.map((s) => <track kind="subtitles" src={`/media/${movie!.id}/${s.file}`} srcLang={s.lang} label={s.label} />)}
+        {subs.map((s) => <track key={s.file} kind="subtitles" src={`/media/${movie!.id}/${s.file}`} srcLang={s.lang} label={s.label} />)}
       </video>
 
       <div class="hit" onClick={(e) => {
@@ -400,6 +473,18 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
                   flash(next >= 0 ? `Subtitles: ${subs[next].label}` : "Subtitles off");
                 }}><Ic.Captions /></button>
             )}
+            {subIdx >= 0 && (
+              <span class="subdelay" role="group" aria-label="Subtitle delay">
+                <button class="cbtn" aria-label="Subtitles earlier by 0.1 seconds" onClick={() => changeDelay(subDelay - 0.1)}>−</button>
+                <button class="delay-val num" title="Subtitle delay. Tap to reset. Keys: G earlier, H later" onClick={() => changeDelay(0)}>
+                  {fmtDelay(subDelay)}
+                </button>
+                <button class="cbtn" aria-label="Subtitles later by 0.1 seconds" onClick={() => changeDelay(subDelay + 0.1)}>+</button>
+                {sess.you.admin && subDelay !== 0 && (
+                  <button class="save hide-sm" onClick={() => void saveDelayForBoth()}>Save for both</button>
+                )}
+              </span>
+            )}
             <button class="cbtn" aria-label={filmMuted ? "Unmute the film" : "Mute the film"} onClick={() => setFilmMuted(!filmMuted)}>
               {filmMuted ? <Ic.VolumeOff /> : <Ic.Volume />}
             </button>
@@ -435,6 +520,11 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
       {!joined && !ended && <Gate sess={sess} onJoin={join} />}
     </div>
   );
+}
+
+function fmtDelay(d: number): string {
+  if (Math.abs(d) < 0.0005) return "Sub 0.00 s";
+  return `Sub ${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(2)} s`;
 }
 
 function reasonName(reason: string): string {

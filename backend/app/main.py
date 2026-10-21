@@ -23,6 +23,7 @@ from . import auth
 from .config import settings
 from .db import Guest, Movie, Room, init_db, session
 from .hub import hub
+from .media import subs as subtitles
 from .sync.clock import now_ms
 
 log = logging.getLogger("msync")
@@ -42,6 +43,13 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="msync", lifespan=lifespan, docs_url=None, redoc_url=None)
+
+if os.environ.get("DEV_SERVE_MEDIA") == "1":
+    # local development only: in production Caddy serves /media behind forward_auth
+    from fastapi.staticfiles import StaticFiles
+
+    settings.media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/media", StaticFiles(directory=settings.media_dir), name="media")
 
 
 def _room_code() -> str:
@@ -183,6 +191,92 @@ def delete_movie(movie_id: str, request: Request):
             r.movie_id = None
         s.delete(m)
     return {"ok": True}
+
+
+# ---- subtitles added by the host ---------------------------------------------------------------
+
+_SUB_FILE = re.compile(r"^sub_[a-z0-9_]+\.vtt$")
+
+
+def _movie_subs(m: Movie) -> list[dict]:
+    return json.loads(m.subtitles or "[]")
+
+
+async def _subs_changed(movie_id: str, subs: list[dict]) -> None:
+    """Rooms showing this film pick up the new list without reloading."""
+    with session() as s:
+        codes = [r.code for r in s.scalars(select(Room).where(Room.movie_id == movie_id))]
+    for code in codes:
+        await hub.broadcast(code, {"t": "subtitles", "movie": movie_id, "subtitles": subs})
+
+
+def _write_vtt(movie_id: str, text: str) -> str:
+    # a new name on every write: /media files are cached as immutable on each device
+    name = f"sub_{secrets.token_hex(4)}.vtt"
+    (settings.media_dir / movie_id / name).write_text(text, encoding="utf-8")
+    return name
+
+
+@app.post("/api/movies/{movie_id}/subtitles")
+async def add_subtitle(movie_id: str, request: Request, filename: str, label: str = "",
+                       lang: str = "und", offset: float = 0.0):
+    """Body: the raw subtitle file. Query: filename, optional label, lang, offset (seconds)."""
+    auth.require_admin(request)
+    data = await request.body()
+    try:
+        vtt = subtitles.to_vtt(data, filename, offset)
+    except subtitles.SubtitleError as e:
+        raise HTTPException(400, str(e)) from e
+    with session() as s:
+        m = s.get(Movie, movie_id)
+        if not m or m.status != "ready":
+            raise HTTPException(409, "Subtitles can be added once the film is ready.")
+        name = _write_vtt(movie_id, vtt)
+        subs = _movie_subs(m) + [{"lang": (lang or "und")[:12],
+                                  "label": (label.strip() or Path(filename).stem)[:60], "file": name}]
+        m.subtitles = json.dumps(subs)
+    await _subs_changed(movie_id, subs)
+    return {"subtitles": subs}
+
+
+@app.post("/api/movies/{movie_id}/subtitles/{file}/shift")
+async def shift_subtitle(movie_id: str, file: str, request: Request, offset: float = Body(..., embed=True)):
+    """Move every line of a subtitle earlier (negative) or later (positive) by `offset` seconds."""
+    auth.require_admin(request)
+    if not _SUB_FILE.match(file) or abs(offset) > 600:
+        raise HTTPException(400, "Bad subtitle or offset.")
+    with session() as s:
+        m = s.get(Movie, movie_id)
+        subs = _movie_subs(m) if m else []
+        entry = next((x for x in subs if x["file"] == file), None)
+        path = settings.media_dir / movie_id / file
+        if not entry or not path.exists():
+            raise HTTPException(404, "No such subtitle.")
+        try:
+            vtt = subtitles.shift_vtt(path.read_text(encoding="utf-8"), offset)
+        except subtitles.SubtitleError as e:
+            raise HTTPException(400, str(e)) from e
+        entry["file"] = _write_vtt(movie_id, vtt)
+        path.unlink(missing_ok=True)
+        m.subtitles = json.dumps(subs)
+    await _subs_changed(movie_id, subs)
+    return {"subtitles": subs}
+
+
+@app.delete("/api/movies/{movie_id}/subtitles/{file}")
+async def delete_subtitle(movie_id: str, file: str, request: Request):
+    auth.require_admin(request)
+    if not _SUB_FILE.match(file):
+        raise HTTPException(400, "Bad subtitle name.")
+    with session() as s:
+        m = s.get(Movie, movie_id)
+        if not m:
+            raise HTTPException(404, "No such film")
+        subs = [x for x in _movie_subs(m) if x["file"] != file]
+        m.subtitles = json.dumps(subs)
+    (settings.media_dir / movie_id / file).unlink(missing_ok=True)
+    await _subs_changed(movie_id, subs)
+    return {"subtitles": subs}
 
 
 @app.get("/api/disk")

@@ -400,6 +400,69 @@ function AddFilm({ class: cls, onAdded, freeBytes }: { class: string; onAdded: (
   );
 }
 
+// ---- subtitles ------------------------------------------------------------------------------
+
+function SubtitlePanel({ m, onClose, onChange }: { m: Movie; onClose: () => void; onChange: () => void }) {
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+  const act = async (key: string, f: () => Promise<unknown>) => {
+    setBusy(key);
+    setErr("");
+    try {
+      await f();
+      onChange();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy("");
+    }
+  };
+  const add = (file: File) =>
+    act("add", async () => {
+      const guessLang = (file.name.match(/[._-]([a-z]{2,3})\.(srt|vtt|ass|ssa)$/i)?.[1] ?? "und").toLowerCase();
+      const label = file.name.replace(/\.(srt|vtt|ass|ssa|txt)$/i, "").replace(/[._]+/g, " ").trim();
+      const q = new URLSearchParams({ filename: file.name, label, lang: guessLang });
+      const res = await fetch(`/api/movies/${m.id}/subtitles?${q}`, { method: "POST", body: file, credentials: "same-origin" });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail ?? "Upload failed");
+    });
+  return (
+    <div class="inner stack" style={{ gap: "10px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px" }}>
+        <strong style={{ fontWeight: 500 }}>Subtitles for {m.title}</strong>
+        <button class="text-btn muted" onClick={onClose}>Done</button>
+      </div>
+      {m.subtitles.length === 0 && <p class="muted">None yet. Add an .srt, .vtt or .ass file; each viewer picks theirs with the CC button.</p>}
+      {m.subtitles.map((sub) => (
+        <div class="row" style={{ minHeight: "44px", padding: "4px 0" }}>
+          <div class="grow">
+            <div class="name">{sub.label}</div>
+            <div class="line2">{sub.lang !== "und" ? sub.lang.toUpperCase() : "Language not set"}</div>
+          </div>
+          <span class="faint hide-sm" style={{ fontSize: "12px" }}>Timing</span>
+          <button class="btn sm" disabled={!!busy} title="Show every line half a second earlier"
+            onClick={() => act(sub.file, () => api.post(`/api/movies/${m.id}/subtitles/${sub.file}/shift`, { offset: -0.5 }))}>−0.5 s</button>
+          <button class="btn sm" disabled={!!busy} title="Show every line half a second later"
+            onClick={() => act(sub.file, () => api.post(`/api/movies/${m.id}/subtitles/${sub.file}/shift`, { offset: 0.5 }))}>+0.5 s</button>
+          <button class="text-btn neg" disabled={!!busy}
+            onClick={() => confirm(`Remove the subtitle "${sub.label}"?`) && act(sub.file, () => api.del(`/api/movies/${m.id}/subtitles/${sub.file}`))}>Remove</button>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+        <button class="btn sm" disabled={!!busy} onClick={() => fileRef.current?.click()}>{busy === "add" ? "Adding…" : "Add subtitle file"}</button>
+        <span class="faint" style={{ fontSize: "12px" }}>Lines too early or late? Nudge them with the timing buttons; open players update straight away.</span>
+        <input ref={fileRef} type="file" accept=".srt,.vtt,.ass,.ssa,text/vtt,application/x-subrip" class="sr-only"
+          onChange={(e) => {
+            const f = (e.target as HTMLInputElement).files?.[0];
+            if (f) void add(f);
+            (e.target as HTMLInputElement).value = "";
+          }} />
+      </div>
+      {err && <span class="form-error">{err}</span>}
+    </div>
+  );
+}
+
 function trackLabel(a: Movie["audio_tracks"][number]): string {
   const lang = a.lang && a.lang !== "und" ? a.lang.toUpperCase() : "Unknown language";
   return `${a.title || lang} · ${codecLabel(a.codec)} ${a.channels === 6 ? "5.1" : a.channels === 8 ? "7.1" : a.channels === 2 ? "stereo" : `${a.channels} ch`}${a.default ? " · default" : ""}`;
@@ -448,6 +511,7 @@ function Library({ class: cls, movies, err, onChange, diskFree, diskTotal }: {
 
 function FilmRow({ m, onChange }: { m: Movie; onChange: () => void }) {
   const [menu, setMenu] = useState(false);
+  const [subsOpen, setSubsOpen] = useState(false);
   const tech = [resolution(m.width, m.height), codecLabel(m.video_codec), codecLabel(m.audio_codec)].filter(Boolean).join(" · ");
   const run = async (f: () => Promise<unknown>) => {
     setMenu(false);
@@ -459,13 +523,14 @@ function FilmRow({ m, onChange }: { m: Movie; onChange: () => void }) {
     onChange();
   };
   return (
+    <>
     <tr>
       <td>
         <div style={{ display: "flex", gap: "12px", alignItems: "center", minWidth: "220px" }}>
           <Poster cls="thumb" src={m.poster} />
           <div style={{ minWidth: 0 }}>
             <div class="name" style={{ fontWeight: 500 }}>{m.title}</div>
-            <span class="line2">{tech || (m.status === "downloading" ? "Downloading" : "Not probed yet")}</span>
+            <span class="line2">{tech || (m.status === "downloading" ? "Downloading" : "Not probed yet")}{m.subtitles.length ? ` · ${m.subtitles.length} subtitle${m.subtitles.length > 1 ? "s" : ""}` : ""}</span>
           </div>
         </div>
       </td>
@@ -503,6 +568,7 @@ function FilmRow({ m, onChange }: { m: Movie; onChange: () => void }) {
           <button class="btn icon quiet sm" aria-label={`Options for ${m.title}`} onClick={() => setMenu(!menu)}><More size={18} /></button>
           {menu && (
             <div class="menu" onMouseLeave={() => setMenu(false)}>
+              {m.status === "ready" && <button onClick={() => { setMenu(false); setSubsOpen(true); }}>Subtitles…</button>}
               <button onClick={() => {
                 const t = prompt("Film title", m.title);
                 if (t) void run(() => api.patch(`/api/movies/${m.id}`, { title: t }));
@@ -532,5 +598,13 @@ function FilmRow({ m, onChange }: { m: Movie; onChange: () => void }) {
         </div>
       </td>
     </tr>
+    {subsOpen && (
+      <tr>
+        <td colSpan={6} style={{ borderTop: 0, paddingTop: 0 }}>
+          <SubtitlePanel m={m} onClose={() => setSubsOpen(false)} onChange={onChange} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
