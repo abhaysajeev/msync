@@ -365,10 +365,17 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   };
 
   const [subStyle, setSubStyle] = useState<SubStyle>(loadStyle);
+  // a sample line for a moment after a style change, when no real line is on screen
+  const [subSample, setSubSample] = useState(false);
+  const sampleTimer = useRef<number>();
   const changeStyle = (st: SubStyle) => {
     setSubStyle(st);
     saveStyle(st);
+    setSubSample(true);
+    clearTimeout(sampleTimer.current);
+    sampleTimer.current = window.setTimeout(() => setSubSample(false), 2500);
   };
+  useEffect(() => () => clearTimeout(sampleTimer.current), []);
 
   // the subtitles and the settings sheet sit above the controls while those are showing
   const barRef = useRef<HTMLDivElement>(null);
@@ -415,14 +422,14 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   const showControls = !idle || !joined || ev?.phase !== "playing" || chatOpen || subsOpen;
 
   return (
-    <div ref={stageRef} class={`stage${showControls ? "" : " idle"}${chatOpen ? " chat-open" : ""}${fullscreenSupported() ? "" : " immersive"}`}
+    <div ref={stageRef} class={`stage${showControls ? "" : " idle"}${chatOpen ? " chat-open" : ""}${subsOpen ? " subs-open" : ""}${fullscreenSupported() ? "" : " immersive"}`}
       onPointerMove={wake} onPointerDown={wake}>
       <video ref={videoRef} class="film" playsInline poster={movie?.poster ?? undefined}
         muted={filmMuted}>
         {subs.map((s) => <track key={s.file} data-file={s.file} kind="subtitles" src={`/media/${movie!.id}/${s.file}`} srcLang={s.lang} label={s.label} />)}
       </video>
 
-      {joined && <SubtitleLayer videoRef={videoRef} file={subFile} delay={subDelay} style={subStyle} preview={subsOpen} />}
+      {joined && <SubtitleLayer videoRef={videoRef} file={subFile} delay={subDelay} style={subStyle} preview={subSample && subsOpen} />}
 
       <div class="hit" onClick={() => {
         if (subsOpen) return setSubsOpen(false);
@@ -475,8 +482,8 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
             <button class="cbtn lead" aria-label={playing ? "Pause for both" : "Play for both"} onClick={togglePlay}>
               {playing ? <Ic.Pause size={22} /> : <Ic.Play size={22} />}
             </button>
-            <button class="cbtn" aria-label="Back 10 seconds" onClick={() => stepSeek(-10)}><Ic.Back10 /></button>
-            <button class="cbtn" aria-label="Forward 10 seconds" onClick={() => stepSeek(10)}><Ic.Fwd10 /></button>
+            <button class="cbtn skip" aria-label="Back 10 seconds" onClick={() => stepSeek(-10)}><Ic.Back10 /></button>
+            <button class="cbtn skip" aria-label="Forward 10 seconds" onClick={() => stepSeek(10)}><Ic.Fwd10 /></button>
             <span class="time"><strong>{clock(pos)}</strong> / {clock(duration)}</span>
             <span class="grow" />
             <button class={`cbtn${subFile ? " on" : ""}`} aria-label="Subtitle settings" aria-expanded={subsOpen}

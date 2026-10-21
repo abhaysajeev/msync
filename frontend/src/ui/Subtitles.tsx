@@ -110,7 +110,7 @@ function Seg<T extends string | number>({ label, value, options, onPick }: {
   onPick: (v: T) => void;
 }) {
   return (
-    <div class="ss-row">
+    <div class="ss-field">
       <span class="ss-label">{label}</span>
       <div class="seg" role="radiogroup" aria-label={label}>
         {options.map(([v, text]) => (
@@ -118,6 +118,45 @@ function Seg<T extends string | number>({ label, value, options, onPick }: {
         ))}
       </div>
     </div>
+  );
+}
+
+/** "+1.5", "-0,25 s", "−2" → seconds; null if it is not a number */
+export function parseDelay(text: string): number | null {
+  const t = text.replace(/[−–]/g, "-").replace(",", ".").replace(/\s*s(ec(onds?)?)?\s*$/i, "").trim();
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isFinite(n) && Math.abs(n) <= 600 ? Math.round(n * 1000) / 1000 : null;
+}
+
+function DelayInput({ value, onCommit }: { value: number; onCommit: (d: number) => void }) {
+  const shown = Math.abs(value) < 0.0005 ? "0.00" : `${value > 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
+  const [draft, setDraft] = useState<string | null>(null);
+  const [bad, setBad] = useState(false);
+  const commit = () => {
+    if (draft === null) return;
+    const d = parseDelay(draft);
+    if (d === null) {
+      setBad(true);
+      return;
+    }
+    setBad(false);
+    setDraft(null);
+    onCommit(d);
+  };
+  return (
+    <label class={`ss-delay-input${bad ? " bad" : ""}`}>
+      <input class="num" type="text" inputMode="text" enterKeyHint="done" spellcheck={false} autoComplete="off"
+        aria-label="Subtitle delay in seconds" value={draft ?? shown}
+        onFocus={(e) => { setDraft(shown.replace("−", "-")); (e.target as HTMLInputElement).select(); }}
+        onInput={(e) => { setDraft((e.target as HTMLInputElement).value); setBad(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { commit(); (e.target as HTMLInputElement).blur(); }
+          if (e.key === "Escape") { setDraft(null); setBad(false); (e.target as HTMLInputElement).blur(); }
+        }}
+        onBlur={() => { commit(); setDraft(null); }} />
+      <span>s</span>
+    </label>
   );
 }
 
@@ -147,57 +186,63 @@ export function SubtitleSheet(p: {
         <button class="cbtn" aria-label="Close subtitle settings" onClick={p.onClose}><Ic.Close size={18} /></button>
       </header>
 
-      <div class="ss-tracks" role="radiogroup" aria-label="Subtitle track">
-        <button role="radio" aria-checked={!file} class={!file ? "on" : ""} onClick={() => p.onPick(null)}>
-          <span class="grow">Off</span>{!file && <Ic.Check size={18} />}
-        </button>
-        {subs.map((s) => (
-          <button role="radio" aria-checked={file === s.file} class={file === s.file ? "on" : ""} onClick={() => p.onPick(s.file)}>
-            <span class="grow">{s.label}{s.lang && s.lang !== "und" && <small>{s.lang.toUpperCase()}</small>}</span>
-            {file === s.file && <Ic.Check size={18} />}
-          </button>
-        ))}
-        {subs.length === 0 && (
-          <p class="ss-note">{p.admin ? "No subtitles for this film yet. Add them from the film's menu on Movie nights." : "No subtitles for this film yet."}</p>
-        )}
-      </div>
-
-      {file && (
-        <>
-          <div class="ss-row col">
-            <span class="ss-label">Timing</span>
-            <div class="ss-delay" role="group" aria-label="Subtitle delay">
-              <button onClick={() => step(-0.5)} aria-label="Earlier by half a second">−0.5</button>
-              <button onClick={() => step(-0.1)} aria-label="Earlier by a tenth of a second">−0.1</button>
-              <output class="num" aria-live="polite">{fmtDelay(delay)}</output>
-              <button onClick={() => step(0.1)} aria-label="Later by a tenth of a second">+0.1</button>
-              <button onClick={() => step(0.5)} aria-label="Later by half a second">+0.5</button>
-            </div>
-            <p class="ss-note">
-              {personal ? "Only on this device." : shared ? "Shared timing for both of you." : "Lines too early? Press +. Too late? Press −."}
-              <span class="hide-sm"> Keys: G earlier, H later.</span>
-            </p>
-            {(personal || (p.admin && shared !== 0)) && (
-              <div class="ss-actions">
-                {personal && <button class="text-btn" onClick={() => p.onDelay(shared)}>{shared ? `Back to shared (${fmtDelay(shared)})` : "Reset"}</button>}
-                {p.admin && !personal && shared !== 0 && <button class="text-btn" onClick={() => p.onDelay(0)}>Reset</button>}
-                {p.admin && personal && (
-                  <button class="btn sm primary" disabled={p.saving} onClick={p.onSaveShared}>{p.saving ? "Saving…" : "Save for both"}</button>
-                )}
-              </div>
-            )}
+      <div class="ss-body">
+        <section class="ss-col">
+          <h3>Track</h3>
+          <div class="ss-tracks" role="radiogroup" aria-label="Subtitle track">
+            <button role="radio" aria-checked={!file} class={!file ? "on" : ""} onClick={() => p.onPick(null)}>
+              <span class="grow">Off</span>{!file && <Ic.Check size={18} />}
+            </button>
+            {subs.map((s) => (
+              <button role="radio" aria-checked={file === s.file} class={file === s.file ? "on" : ""} onClick={() => p.onPick(s.file)}>
+                <span class="grow">{s.label}{s.lang && s.lang !== "und" && <small>{s.lang.toUpperCase()}</small>}</span>
+                {file === s.file && <Ic.Check size={18} />}
+              </button>
+            ))}
           </div>
+          {subs.length === 0 && (
+            <p class="ss-note">{p.admin ? "No subtitles for this film yet. Add them from the film's menu on Movie nights." : "No subtitles for this film yet."}</p>
+          )}
 
+          {file && (
+            <>
+              <h3>Timing</h3>
+              <div class="ss-delay" role="group" aria-label="Subtitle delay">
+                <button onClick={() => step(-0.5)} aria-label="Earlier by half a second">−0.5</button>
+                <button onClick={() => step(-0.1)} aria-label="Earlier by a tenth of a second">−0.1</button>
+                <DelayInput value={delay} onCommit={p.onDelay} />
+                <button onClick={() => step(0.1)} aria-label="Later by a tenth of a second">+0.1</button>
+                <button onClick={() => step(0.5)} aria-label="Later by half a second">+0.5</button>
+              </div>
+              <p class="ss-note">
+                {personal ? "Only on this device. " : shared ? "Shared timing for both of you. " : "Lines too early? Press +. Too late? Press −. "}
+                Tap the number to type a value.
+              </p>
+              {(personal || (p.admin && shared !== 0)) && (
+                <div class="ss-actions">
+                  {personal && <button class="text-btn" onClick={() => p.onDelay(shared)}>{shared ? `Back to shared (${fmtDelay(shared)})` : "Reset"}</button>}
+                  {p.admin && !personal && shared !== 0 && <button class="text-btn" onClick={() => p.onDelay(0)}>Reset</button>}
+                  {p.admin && personal && (
+                    <button class="btn sm primary" disabled={p.saving} onClick={p.onSaveShared}>{p.saving ? "Saving…" : "Save for both"}</button>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+
+        <section class="ss-col">
+          <h3>Appearance</h3>
           <Seg label="Size" value={style.size} onPick={(size) => set({ size })}
             options={[[0.8, "S"], [1, "M"], [1.3, "L"], [1.65, "XL"]]} />
           <Seg label="Position" value={style.lift} onPick={(lift) => set({ lift })}
             options={[[2, "Low"], [6, "Normal"], [14, "Raised"], [24, "High"]]} />
-          <Seg label="Style" value={style.bg} onPick={(bg) => set({ bg })}
+          <Seg label="Background" value={style.bg} onPick={(bg) => set({ bg })}
             options={[["shadow", "Shadow"], ["box", "Box"], ["solid", "Solid"]]} />
           <Seg label="Colour" value={style.color} onPick={(color) => set({ color })}
             options={[["white", "White"], ["yellow", "Yellow"]]} />
-        </>
-      )}
+        </section>
+      </div>
     </div>
   );
 }
