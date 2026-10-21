@@ -201,7 +201,8 @@ class Hub:
                     conn.member_id, now_ms(), seq=int(msg.get("seq", -1)),
                     state=str(msg.get("state", "")), pos=float(msg.get("pos") or 0),
                     ahead=float(msg.get("ahead") or 0), rtt_ms=float(msg.get("rtt") or 0),
-                    drift_ms=float(msg.get("drift") or 0), mbps=float(msg.get("mbps") or 0))
+                    drift_ms=float(msg.get("drift") or 0), mbps=float(msg.get("mbps") or 0),
+                    need=float(msg.get("need") or 0))
                 effects.append(room.state.presence())
             await self._deliver(room, effects)
             return

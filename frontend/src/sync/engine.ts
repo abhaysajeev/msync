@@ -8,7 +8,7 @@ import type { Msg, RoomSocket } from "../lib/socket";
 import type { Player } from "../player/player";
 import { ClockSync, localNow } from "./clock";
 import { DriftPolicy, defaultStrategy, type Strategy } from "./drift";
-import { minAheadFor, prebufferNeeded } from "./prebuffer";
+import { minAheadFor, prebufferNeeded, secondsWithinBytes } from "./prebuffer";
 
 export type Phase = "paused" | "preparing" | "playing";
 export type LocalState = "loading" | "ready" | "buffering" | "playing" | "paused";
@@ -37,6 +37,8 @@ const TICK_MS = 250;
 const STATUS_MS = 1000;
 const PING_MS = 10_000;
 const STALL_REPORT_MS = 300;
+const CATCH_UP_STALL_MS = 1500;
+const MIN_START_AHEAD = 4; // a full-but-short buffer still has to hold this much
 
 export class SyncEngine {
   // server state
@@ -58,8 +60,11 @@ export class SyncEngine {
   needAhead = 0;
   corrections = 0;
   lastCorrection = "";
+  /** The host started without us for this seq: catch up alone instead of stalling the room. */
+  excused = false;
 
   private op = 0;
+  private catchingUp = false;
   private selfPause = 0;
   private selfPlay = 0;
   private microPausing = false;
@@ -76,6 +81,7 @@ export class SyncEngine {
     private socket: RoomSocket,
     private player: Player,
     private profile: Profile | null,
+    private me: string,
     strategy: Strategy = defaultStrategy(),
   ) {
     const forced = new URLSearchParams(location.search).get("sync");
@@ -263,6 +269,7 @@ export class SyncEngine {
     await this.clockReady();
     if (m.kind === "start") {
       if (m.seq !== this.seq) return;
+      this.excused = Array.isArray(m.excused) && m.excused.includes(this.me);
       this.phase = "playing";
       this.pos = m.pos;
       this.anchor = m.at;
@@ -272,6 +279,7 @@ export class SyncEngine {
       return;
     }
     this.seq = m.seq;
+    this.excused = false;
     this.reason = m.reason ?? m.by ?? "";
     this.waitingFor = [];
     const op = ++this.op;
@@ -313,7 +321,10 @@ export class SyncEngine {
       this.needAhead = need;
       const ahead = this.player.ahead();
       const nativeReady = this.player.engine === "native" && this.player.video.readyState >= 4 && ahead >= Math.min(need, 6);
-      if (ahead >= need || nativeReady) break;
+      // the player stopped fetching short of `need` (browser storage quota): this is all it
+      // will ever hold, so waiting longer would wait forever
+      const fullReady = this.player.full() && ahead >= Math.min(need, MIN_START_AHEAD);
+      if (ahead >= need || nativeReady || fullReady) break;
       await sleep(200);
     }
     if (op !== this.op || seq !== this.seq) return;
@@ -329,7 +340,9 @@ export class SyncEngine {
       const p = prebufferNeeded(this.profile.segments, this.player.mbps, pos, this.player.capacity);
       need = minAheadFor(p, serverMin, this.player.capacity);
     }
-    return Math.min(need, remaining, this.player.capacity * 0.9);
+    // never ask for more film than the browser can hold at this bitrate
+    const holdable = this.profile ? secondsWithinBytes(this.profile.segments, pos, this.player.budgetBytes) : Infinity;
+    return Math.max(Math.min(need, remaining, this.player.capacity * 0.9, holdable), Math.min(MIN_START_AHEAD, remaining));
   }
 
   private scheduleStart(op: number, pos: number, at: number) {
@@ -343,6 +356,10 @@ export class SyncEngine {
           return;
         }
       }
+      if (this.excused && this.player.ahead(pos) < 2) {
+        void this.catchUp(op);
+        return;
+      }
       const late = (this.serverNow() - at) / 1000;
       if (late > 0.25) await this.player.seek(pos + late + this.policy.seekCostMs / 1000);
       if (op !== this.op) return;
@@ -353,6 +370,37 @@ export class SyncEngine {
     }
     const delay = at - this.serverNow();
     this.startTimer = window.setTimeout(go, Math.max(0, delay - 15));
+  }
+
+  /**
+   * Get in step alone while the room plays on (the host started without us). Seeking straight
+   * to the room's position chases it: by the time that segment arrives the room has moved on.
+   * So seek ahead of it, buffer there, and start the moment the room reaches that point.
+   */
+  private async catchUp(op: number) {
+    if (this.catchingUp) return;
+    this.catchingUp = true;
+    try {
+      this.setLocal("loading");
+      this.pauseLocal();
+      this.player.setRate(1);
+      this.policy.rateActive = false;
+      const dur = this.player.duration || this.profile?.duration || Infinity;
+      let lead = Math.max(6, (2 * this.policy.seekCostMs) / 1000);
+      while (op === this.op && this.phase === "playing") {
+        const p = Math.min(this.target() + lead, dur - 1);
+        await this.player.seek(p);
+        while (op === this.op && this.player.ahead() < MIN_START_AHEAD && this.target() < p - 0.3) await sleep(100);
+        if (op !== this.op) return;
+        if (this.target() < p - 0.3 || p >= dur - 1) {
+          this.scheduleStart(op, p, this.anchor + (p - this.pos) * 1000);
+          return;
+        }
+        lead = Math.min(lead * 2, 120); // the link is slower than that: aim further ahead
+      }
+    } finally {
+      this.catchingUp = false;
+    }
   }
 
   private async joinPlaying(op: number) {
@@ -422,7 +470,9 @@ export class SyncEngine {
     const now = localNow();
     if (this.phase === "playing" && this.serverNow() >= this.anchor + 300) {
       // stall watchdog
-      if (this.waitingSince && now - this.waitingSince > STALL_REPORT_MS && v.readyState < 3) {
+      if (this.waitingSince && now - this.waitingSince > STALL_REPORT_MS && v.readyState < 3 && this.excused) {
+        if (now - this.waitingSince > CATCH_UP_STALL_MS) void this.catchUp(this.op);
+      } else if (this.waitingSince && now - this.waitingSince > STALL_REPORT_MS && v.readyState < 3) {
         this.setLocal("buffering");
         if (this.stallReportedSeq !== this.seq) {
           this.stallReportedSeq = this.seq;
@@ -460,6 +510,10 @@ export class SyncEngine {
         }, c.ms);
         break;
       case "seek": {
+        if (this.excused && this.player.ahead(c.to) < 1) {
+          void this.catchUp(op);
+          break;
+        }
         const t0 = performance.now();
         this.player.setRate(1);
         void this.player.seek(c.to).then(() => {
@@ -486,7 +540,7 @@ export class SyncEngine {
     this.lastStatus = now;
     this.socket.send({
       t: "status", seq: this.seq, state: this.localState, pos: this.player.position(),
-      ahead: this.player.ahead(), rtt: this.clock.rtt, drift: Math.round(this.drift), mbps: this.player.mbps,
+      ahead: this.player.ahead(), need: this.needAhead, rtt: this.clock.rtt, drift: Math.round(this.drift), mbps: this.player.mbps,
     });
   }
 }

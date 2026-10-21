@@ -22,6 +22,19 @@ interface ChatMsg {
 }
 
 const IDLE_MS = 3000;
+const PRELOAD_S = 30;        // buffer goal behind the gate and while the call connects
+const CALL_SETUP_MS = 60_000;
+
+/** "Meen (34 of 60 s buffered)", or just the name before their first report. */
+function waitingText(m: MemberInfo): string {
+  if (!m.need || m.state !== "loading") return m.name;
+  return `${m.name} (${Math.min(m.ahead, m.need).toFixed(0)} of ${m.need.toFixed(0)} s buffered)`;
+}
+
+/** Where a snapshot says the room is now (rough: the clock is not synced yet; only for preloading). */
+function roomPosition(m: Msg): number {
+  return m.phase === "playing" ? m.pos + Math.max(0, m.now - m.anchor) / 1000 : m.pos;
+}
 
 function fullscreenSupported(): boolean {
   const d = document as any;
@@ -129,17 +142,33 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   }, []);
 
   // ---- player (loads behind the gate so the first frames are ready at the tap) ----
+  // It preloads where the room is, not at 0:00: a guest joining at 55:45 otherwise downloads
+  // minutes of the opening for nothing, on the same link the call is trying to connect over.
   useEffect(() => {
     const v = videoRef.current;
-    if (!v || !sess.movie?.manifest) return;
+    const manifest = sess.movie?.manifest;
+    if (!v || !manifest) return;
     const p = new Player(v);
     playerRef.current = p;
-    try {
-      p.load(sess.movie.manifest);
-    } catch (e: any) {
-      setEnded(e.message);
-    }
-    return () => p.destroy();
+    p.setGoal(PRELOAD_S);
+    let loaded = false;
+    const go = (m: Msg | null) => {
+      if (loaded) return;
+      loaded = true;
+      try {
+        p.load(manifest, m ? roomPosition(m) : 0);
+      } catch (e: any) {
+        setEnded(e.message);
+      }
+    };
+    if (socket.snapshot) go(socket.snapshot);
+    const off = socket.on("snapshot", go);
+    const t = window.setTimeout(() => go(null), 3000);
+    return () => {
+      off();
+      clearTimeout(t);
+      p.destroy();
+    };
   }, [sess.movie?.manifest]);
 
   // ---- the Join tap: one gesture unlocks autoplay with sound, the iOS audio session and the camera
@@ -156,7 +185,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
     setJoined(true);
     if (opts.camera || opts.mic) void call.start(opts);
     if (p) {
-      const e = new SyncEngine(socket, p, sess.profile);
+      const e = new SyncEngine(socket, p, sess.profile, sess.you.id);
       engineRef.current = e;
       e.subscribe(rerender);
       e.start();
@@ -182,6 +211,16 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
     if (!v) return;
     v.volume = cv.speaking ? 0.4 : 1;
   }, [cv.speaking]);
+
+  // Hold the film's buffer to a short goal until the call connects (at most a minute): a
+  // full-speed fill of minutes of film queues the call's handshake behind it on the link.
+  useEffect(() => {
+    const p = playerRef.current;
+    if (!p) return;
+    const settingUp = call.started && cv.state !== "connected" && performance.now() - call.startedAt < CALL_SETUP_MS;
+    const need = engineRef.current?.needAhead ?? 0;
+    p.setGoal(!joined || settingUp ? Math.max(PRELOAD_S, need + 5) : null);
+  });
 
   // keep the screen awake while watching
   useEffect(() => {
@@ -410,7 +449,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
           <span class="spinner" />
           <strong>{buffering ? `Paused while ${who === me?.name ? "you" : who} catch${who === me?.name ? "" : "es"} up` : "Getting both of you ready"}</strong>
           <p class="num">
-            {ev.localState === "ready" ? (others.length ? `Waiting for ${others.map((o) => o.name).join(" and ")}` : "Starting…")
+            {ev.localState === "ready" ? (others.length ? `Waiting for ${others.map(waitingText).join(" and ")}` : "Starting…")
               : `Buffering ${Math.min(ev.ahead, ev.needAhead).toFixed(0)} of ${ev.needAhead.toFixed(0)} s`}
           </p>
           {sess.you.admin && ev.waitingFor.length > 0 && <button class="btn sm" onClick={() => engine!.forceStart()}>Start without waiting</button>}

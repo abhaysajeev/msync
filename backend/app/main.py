@@ -446,7 +446,8 @@ def ice_servers(request: Request):
         cred = base64.b64encode(hmac.new(settings.turn_secret.encode(), user.encode(),
                                          hashlib.sha1).digest()).decode()
         h, p = settings.turn_host, settings.turn_port
-        servers = [{"urls": [f"stun:{h}:{p}"]},
+        # Google's STUN as well, so peers still learn their public address if coturn is down
+        servers = [{"urls": [f"stun:{h}:{p}", "stun:stun.l.google.com:19302"]},
                    {"urls": [f"turn:{h}:{p}?transport=udp", f"turn:{h}:{p}?transport=tcp"],
                     "username": user, "credential": cred}]
     return {"iceServers": servers}

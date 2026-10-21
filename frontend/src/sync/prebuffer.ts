@@ -70,3 +70,19 @@ export function peakMbps(segments: Segment[], windowSec = 30): number {
   }
   return peak;
 }
+
+/** Seconds of film from `fromSec` whose segments fit in `bytes` (what the browser can hold). */
+export function secondsWithinBytes(segments: Segment[], fromSec: number, bytes: number): number {
+  let t = 0;
+  let held = 0;
+  let total = 0;
+  for (const [dur, size] of segments) {
+    if (t + dur > fromSec) {
+      if (total + size > bytes) break;
+      total += size;
+      held += dur - Math.max(0, fromSec - t);
+    }
+    t += dur;
+  }
+  return held;
+}

@@ -13,6 +13,8 @@ export class RoomSocket {
   private stopped = false;
   private queue: string[] = [];
   status: SocketStatus = "connecting";
+  /** The latest room snapshot, for code that starts listening after it arrived. */
+  snapshot: Msg | null = null;
 
   constructor(private code: string) {
     this.connect();
@@ -49,6 +51,7 @@ export class RoomSocket {
       } catch {
         return;
       }
+      if (m.t === "snapshot") this.snapshot = m;
       this.listeners.get(m.t)?.forEach((f) => f(m));
       this.listeners.get("*")?.forEach((f) => f(m));
     };

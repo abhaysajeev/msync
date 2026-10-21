@@ -22,8 +22,9 @@ from typing import Any, Optional
 START_LEAD_MS = 400.0          # minimum scheduling lead for start()
 BARRIER_NOTICE_MS = 30_000.0   # after this, tell everyone who we are waiting for
 MIN_AHEAD_DEFAULT = 8.0        # seconds buffered before a start
-MIN_AHEAD_CAP = 180.0
+MIN_AHEAD_CAP = 60.0          # more than a browser reliably holds of a high-bitrate film is a deadlock
 STALL_GROWTH = 1.5             # each stall asks for 1.5x more buffer next time
+CALM_DECAY_MS = 180_000.0      # ...and each 3 minutes of smooth playback gives one step back
 RESUME_DRIFT_TOLERANCE_S = 5.0 # use the staller's own position if it is this close
 
 
@@ -51,6 +52,7 @@ class Member:
     state: str = "loading"       # loading|ready|buffering|playing|paused
     pos: float = 0.0
     ahead: float = 0.0           # seconds buffered past pos
+    need: float = 0.0            # seconds it is buffering towards before reporting ready
     rtt_ms: float = 0.0
     drift_ms: float = 0.0
     mbps: float = 0.0
@@ -60,7 +62,7 @@ class Member:
         return {
             "id": self.id, "name": self.name, "admin": self.is_admin,
             "connected": self.connected, "state": self.state,
-            "pos": round(self.pos, 3), "ahead": round(self.ahead, 1),
+            "pos": round(self.pos, 3), "ahead": round(self.ahead, 1), "need": round(self.need, 1),
             "rtt": round(self.rtt_ms), "drift": round(self.drift_ms), "mbps": round(self.mbps, 1),
         }
 
@@ -78,6 +80,7 @@ class RoomState:
     reason: str = ""             # why the current barrier exists, for the UI
     barrier_started_ms: float = 0.0
     barrier_noticed: bool = False
+    calm_since_ms: float = 0.0   # last stall or decay step while playing
     members: dict[str, Member] = field(default_factory=dict)
 
     # ---- queries -------------------------------------------------------------------------
@@ -166,11 +169,11 @@ class RoomState:
 
     def status(self, member_id: str, now: float, *, seq: int, state: str, pos: float,
                ahead: float, rtt_ms: float = 0.0, drift_ms: float = 0.0,
-               mbps: float = 0.0) -> list[Effect]:
+               mbps: float = 0.0, need: float = 0.0) -> list[Effect]:
         m = self.members.get(member_id)
         if m is None:
             return []
-        m.state, m.pos, m.ahead, m.last_seen = state, pos, ahead, now
+        m.state, m.pos, m.ahead, m.need, m.last_seen = state, pos, ahead, need, now
         m.rtt_ms, m.drift_ms = rtt_ms or m.rtt_ms, drift_ms
         if mbps:
             m.mbps = mbps
@@ -185,6 +188,7 @@ class RoomState:
             exp = self.expected_pos(now)
             stall_pos = pos if abs(pos - exp) <= RESUME_DRIFT_TOLERANCE_S else exp
             self.min_ahead = min(self.min_ahead * STALL_GROWTH, MIN_AHEAD_CAP)
+            self.calm_since_ms = now
             return self._start_barrier(stall_pos, now, reason=f"buffering:{m.name}")
 
         return []
@@ -201,6 +205,10 @@ class RoomState:
             self.barrier_noticed = True
             waiting = [m.name for m in self.connected() if m.ready_seq != self.seq]
             out.append(Effect({"t": "notice", "kind": "waiting", "names": waiting, "seq": self.seq}))
+        if (self.phase is Phase.PLAYING and self.min_ahead > MIN_AHEAD_DEFAULT
+                and now - max(self.calm_since_ms, self.anchor_ms) > CALM_DECAY_MS):
+            self.min_ahead = max(MIN_AHEAD_DEFAULT, self.min_ahead / STALL_GROWTH)
+            self.calm_since_ms = now
         if self.phase is Phase.PLAYING and self.duration and self.expected_pos(now) >= self.duration:
             out += self._pause_at(self.duration, now, by="end")
         return out
@@ -239,7 +247,10 @@ class RoomState:
         max_rtt = max((m.rtt_ms for m in self.connected()), default=0.0)
         at = now + max(START_LEAD_MS, 2.0 * max_rtt)
         self.phase, self.anchor_ms = Phase.PLAYING, at
-        return [Effect({"t": "cmd", "kind": "start", "seq": self.seq, "pos": self.pos, "at": at})]
+        # an excused member catches up on its own (seek ahead, buffer, join in) rather than chasing
+        excused = [m.id for m in self.connected() if m.excused_seq == self.seq]
+        return [Effect({"t": "cmd", "kind": "start", "seq": self.seq, "pos": self.pos, "at": at,
+                        "excused": excused})]
 
     def _force_start(self, now: float) -> list[Effect]:
         if self.phase is not Phase.PREPARING:

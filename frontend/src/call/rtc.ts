@@ -36,6 +36,7 @@ export class Call {
   error: string | null = null;
   speaking = false;
   started = false;
+  startedAt = 0;
 
   constructor(private socket: RoomSocket, private polite: boolean) {}
 
@@ -60,6 +61,7 @@ export class Call {
   async start(opts: { camera: boolean; mic: boolean }): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.startedAt = performance.now();
     // Keep iOS in play-and-record from the start, so the film's volume does not jump
     // when the mic opens later (WebKit 236219).
     const nav = navigator as any;

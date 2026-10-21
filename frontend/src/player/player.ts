@@ -19,6 +19,11 @@ export class Player {
   engine: Engine = "native";
   mbps = 0;
   capacity = 180;
+  /** Bytes of film the browser reliably holds ahead (MSE quotas: Chrome ~150 MB, iPhone less). */
+  budgetBytes = 110e6;
+  private goal: number | null = null;
+  private inflight = 0;
+  private lastFragAt = 0;
   private lastFrame = { mediaTime: -1, at: 0 };
   private rvfc = false;
   private listeners = new Set<() => void>();
@@ -32,6 +37,11 @@ export class Player {
     video.controls = false;
     // ManagedMediaSource needs remote playback off (or an AirPlay alternative source)
     (video as any).disableRemotePlayback = true;
+    // hls.js aborts the in-flight fragment on a seek without an event of its own
+    video.addEventListener("seeking", () => {
+      this.inflight = 0;
+      this.lastFragAt = 0;
+    });
     this.watchFrames();
   }
 
@@ -39,10 +49,13 @@ export class Player {
     this.destroyHls();
     const phone = isIOSPhone();
     this.capacity = phone ? 90 : 180;
+    this.budgetBytes = phone ? 60e6 : 110e6;
+    this.inflight = 0;
+    this.lastFragAt = 0;
     if (Hls.isSupported()) {
       this.engine = "hls.js";
       const hls = new Hls({
-        maxBufferLength: this.capacity,
+        maxBufferLength: this.goal ?? this.capacity,
         maxMaxBufferLength: this.capacity + 120,
         maxBufferSize: (phone ? 120 : 250) * 1000 * 1000,
         backBufferLength: 30,
@@ -55,7 +68,18 @@ export class Player {
         fragLoadingMaxRetry: 8,
         manifestLoadingMaxRetry: 6,
       });
+      // track whether a fragment is downloading, so a buffer that stopped growing can be told
+      // apart from one that is still filling over a slow link
+      hls.on(Hls.Events.FRAG_LOADING, () => {
+        this.inflight++;
+      });
+      const fragDone = () => {
+        this.inflight = Math.max(0, this.inflight - 1);
+        this.lastFragAt = performance.now();
+      };
+      hls.on(Hls.Events.FRAG_LOAD_EMERGENCY_ABORTED, fragDone);
       hls.on(Hls.Events.FRAG_LOADED, (_e, data) => {
+        fragDone();
         const st = data.frag.stats;
         const ms = st.loading.end - st.loading.first;
         if (ms > 30 && st.loaded > 200_000) {
@@ -65,6 +89,7 @@ export class Player {
         this.emit();
       });
       hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (data.frag && /frag/i.test(String(data.details))) fragDone();
         if (!data.fatal) return;
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
         else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
@@ -190,6 +215,26 @@ export class Player {
 
   setRate(r: number): void {
     this.video.playbackRate = r;
+  }
+
+  /**
+   * Cap how far ahead hls.js fetches (null = the full capacity). A full-speed fill of minutes
+   * of film saturates the link, and the call's connection setup waits behind it.
+   */
+  setGoal(seconds: number | null): void {
+    const g = seconds === null ? null : Math.min(this.capacity, Math.max(10, seconds));
+    if (g === this.goal) return;
+    this.goal = g;
+    if (this.hls) this.hls.config.maxBufferLength = g ?? this.capacity;
+  }
+
+  /**
+   * hls.js has stopped fetching: the buffer is as full as this browser lets it get (goal reached
+   * or MSE quota hit). Waiting for more would wait forever.
+   */
+  full(): boolean {
+    if (this.engine !== "hls.js" || this.video.seeking) return false;
+    return this.inflight === 0 && this.lastFragAt > 0 && performance.now() - this.lastFragAt > 2500;
   }
 
   /** Nudge hls.js to keep loading while paused (it does by default; native may not). */

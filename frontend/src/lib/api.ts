@@ -71,6 +71,7 @@ export interface MemberInfo {
   state: string;
   pos: number;
   ahead: number;
+  need?: number;
   rtt: number;
   drift: number;
   mbps: number;

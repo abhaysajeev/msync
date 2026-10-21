@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ClockSync } from "./clock";
 import { COOLDOWN_MS, DriftPolicy, defaultStrategy } from "./drift";
-import { minAheadFor, peakMbps, prebufferNeeded, type Segment } from "./prebuffer";
+import { minAheadFor, peakMbps, prebufferNeeded, secondsWithinBytes, type Segment } from "./prebuffer";
 
 describe("ClockSync", () => {
   it("recovers the true offset and prefers the lowest-RTT sample", () => {
@@ -108,5 +108,14 @@ describe("prebuffer", () => {
 
   it("finds the peak window", () => {
     expect(peakMbps(flat)).toBeCloseTo(5, 6);
+  });
+});
+
+describe("secondsWithinBytes", () => {
+  it("counts only the film the browser can hold from the start point", () => {
+    const segs: Segment[] = Array.from({ length: 100 }, () => [6, 15e6]); // 20 Mbps
+    expect(secondsWithinBytes(segs, 0, 110e6)).toBe(42); // 7 segments
+    expect(secondsWithinBytes(segs, 33, 110e6)).toBe(39); // mid-segment start: 3 s + 6 more
+    expect(secondsWithinBytes(segs, 0, 1e6)).toBe(0);
   });
 });

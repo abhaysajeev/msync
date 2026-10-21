@@ -187,3 +187,34 @@ def test_end_of_film_pauses():
     r.status("a", 0, seq=r.seq, state="ready", pos=0, ahead=10)
     eff = r.tick(r.anchor_ms + 11_000)
     assert cmds(eff, "pause") and r.phase is Phase.PAUSED
+
+
+def test_repeated_stalls_cap_the_buffer_target_and_calm_playback_lowers_it():
+    # A target above what a browser can hold of a high-bitrate film never completes: the
+    # barrier then waits forever (seen mid-film after a few stalls).
+    from app.sync.room_state import CALM_DECAY_MS, MIN_AHEAD_CAP, MIN_AHEAD_DEFAULT
+    r = room_with_two()
+    r.intent("a", "play", 0, 0)
+    t = 0.0
+    for _ in range(12):
+        ready_all(r, t)
+        t = r.anchor_ms + 10_000
+        r.status("b", t, seq=r.seq, state="buffering", pos=r.expected_pos(t), ahead=0)
+    assert r.min_ahead == MIN_AHEAD_CAP
+    ready_all(r, t)
+    for _ in range(20):
+        t += CALM_DECAY_MS + 1
+        r.tick(t)
+    assert r.min_ahead == MIN_AHEAD_DEFAULT
+
+
+def test_force_start_names_the_excused_member():
+    r = room_with_two()
+    r.intent("a", "play", 0, 0)
+    r.status("a", 10, seq=r.seq, state="ready", pos=0, ahead=30)
+    start = cmds(r.intent("a", "force", r.seq, 40_000), "start")[0]
+    assert start["excused"] == ["b"]
+    # a normal start excuses nobody
+    r2 = room_with_two()
+    r2.intent("a", "play", 0, 0)
+    assert cmds(ready_all(r2, 0), "start")[0]["excused"] == []
