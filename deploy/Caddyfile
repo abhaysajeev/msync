@@ -2,7 +2,9 @@
 # to that IP) or your own domain. Caddy gets and renews the Let's Encrypt certificate itself.
 {
 	servers {
-		protocols h1 h2 h3
+		# no HTTP/3: on the Indian mobile and home links we watch from, QUIC transfers stalled
+		# for 30 s at a time (Caddy: "no recent network activity") while TCP kept working
+		protocols h1 h2
 	}
 }
 

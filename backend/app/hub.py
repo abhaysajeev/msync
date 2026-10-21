@@ -45,6 +45,7 @@ class Hub:
     def __init__(self) -> None:
         self.rooms: dict[str, LiveRoom] = {}
         self._ticker: Optional[asyncio.Task] = None
+        self._status_logged: dict[tuple[str, str], tuple[str, float]] = {}
 
     # ---- lifecycle ---------------------------------------------------------------------------
 
@@ -89,6 +90,9 @@ class Hub:
 
     async def _deliver(self, room: LiveRoom, effects: list[Effect]) -> None:
         for e in effects:
+            if e.msg.get("t") in ("cmd", "notice", "rejected"):
+                # one line per sync decision, so `docker compose logs api` tells what happened
+                log.info("%s sync %s", room.code, {k: v for k, v in e.msg.items() if k != "t"})
             if e.to is None:
                 await asyncio.gather(*(self._send(c, e.msg) for c in list(room.conns.values())))
             elif e.to in room.conns:
@@ -154,6 +158,7 @@ class Hub:
             except Exception:  # noqa: BLE001
                 pass
         room.conns[member_id] = conn
+        log.info("%s join %s%s", room.code, name, " (replaced an older connection)" if old else "")
 
         async with room.lock:
             effects = room.state.join(member_id, name, now_ms(), is_admin=is_admin)
@@ -177,6 +182,7 @@ class Hub:
         finally:
             if room.conns.get(member_id) is conn:
                 room.conns.pop(member_id, None)
+                log.info("%s leave %s", room.code, name)
                 async with room.lock:
                     effects = room.state.leave(member_id, now_ms())
                 await self._deliver(room, effects)
@@ -204,6 +210,7 @@ class Hub:
                     drift_ms=float(msg.get("drift") or 0), mbps=float(msg.get("mbps") or 0),
                     need=float(msg.get("need") or 0))
                 effects.append(room.state.presence())
+                self._log_status(room, conn, msg)
             await self._deliver(room, effects)
             return
         if t == "min_ahead" and conn.is_admin:
@@ -231,6 +238,18 @@ class Hub:
             # WebRTC signaling / mic+camera state: relay verbatim to the other member(s)
             await self._others(room, conn, {**msg, "from": conn.member_id})
             return
+
+    def _log_status(self, room: LiveRoom, conn: Conn, msg: dict[str, Any]) -> None:
+        """A member's state changes, plus their buffer progress every 10 s while the room waits."""
+        key, state, now = (room.code, conn.member_id), str(msg.get("state")), now_ms()
+        last_state, last_at = self._status_logged.get(key, ("", 0.0))
+        waiting = room.state.phase is Phase.PREPARING
+        if state == last_state and not (waiting and now - last_at > 10_000):
+            return
+        self._status_logged[key] = (state, now)
+        log.info("%s status %s %s seq=%s pos=%.1f ahead=%.1f need=%.1f mbps=%.1f rtt=%.0f", room.code,
+                 conn.name, state, msg.get("seq"), float(msg.get("pos") or 0), float(msg.get("ahead") or 0),
+                 float(msg.get("need") or 0), float(msg.get("mbps") or 0), float(msg.get("rtt") or 0))
 
     async def _others(self, room: LiveRoom, conn: Conn, msg: dict[str, Any]) -> None:
         await asyncio.gather(*(self._send(c, msg) for c in list(room.conns.values())

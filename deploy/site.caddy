@@ -1,6 +1,15 @@
 # Shared site directives, imported by Caddyfile and Caddyfile.ip.
 encode zstd gzip
 
+# Access log for film files only (time, size, duration, protocol per segment): the evidence
+# for "why did this person's video stop loading". Everything else is logged by the api.
+log {
+	output stdout
+	format json
+}
+@notmedia not path /media/*
+log_skip @notmedia
+
 # --- film files: served straight from disk, after the api says this person may see them
 @media path /media/*
 handle @media {
