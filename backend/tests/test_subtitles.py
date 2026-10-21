@@ -60,11 +60,12 @@ def test_add_shift_delete_endpoints():
         sub = r.json()["subtitles"][0]
         assert sub["label"] == "English" and (settings.media_dir / mid / sub["file"]).exists()
 
-        r = c.post(f"/api/movies/{mid}/subtitles/{sub['file']}/shift", json={"offset": 1.5})
+        r = c.patch(f"/api/movies/{mid}/subtitles/{sub['file']}", json={"delay": 1.5})
         new = r.json()["subtitles"][0]
-        assert new["file"] != sub["file"]  # new name, so cached copies are not reused
-        assert not (settings.media_dir / mid / sub["file"]).exists()
-        assert "00:00:03.000 --> 00:00:04.500" in (settings.media_dir / mid / new["file"]).read_text()
+        assert new["file"] == sub["file"] and new["delay"] == 1.5  # the file stays; timing is a setting
+        r = c.patch(f"/api/movies/{mid}/subtitles/{sub['file']}", json={"delay": -0.25})
+        assert r.json()["subtitles"][0]["delay"] == -0.25  # and can be changed again
+        assert c.patch(f"/api/movies/{mid}/subtitles/{sub['file']}", json={"delay": 9999}).status_code == 400
 
         assert c.delete(f"/api/movies/{mid}/subtitles/{new['file']}").json()["subtitles"] == []
         assert c.post(f"/api/movies/{mid}/subtitles?filename=x.srt", content=b"junk").status_code == 400

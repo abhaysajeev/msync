@@ -239,25 +239,24 @@ async def add_subtitle(movie_id: str, request: Request, filename: str, label: st
     return {"subtitles": subs}
 
 
-@app.post("/api/movies/{movie_id}/subtitles/{file}/shift")
-async def shift_subtitle(movie_id: str, file: str, request: Request, offset: float = Body(..., embed=True)):
-    """Move every line of a subtitle earlier (negative) or later (positive) by `offset` seconds."""
+@app.patch("/api/movies/{movie_id}/subtitles/{file}")
+async def update_subtitle(movie_id: str, file: str, request: Request,
+                          delay: Optional[float] = Body(None, embed=True), label: Optional[str] = Body(None, embed=True)):
+    """Shared timing for both viewers: `delay` seconds, positive shows every line later.
+    The file itself is never rewritten, so the value can be changed again at any time."""
     auth.require_admin(request)
-    if not _SUB_FILE.match(file) or abs(offset) > 600:
-        raise HTTPException(400, "Bad subtitle or offset.")
+    if not _SUB_FILE.match(file) or (delay is not None and abs(delay) > 600):
+        raise HTTPException(400, "Bad subtitle or delay.")
     with session() as s:
         m = s.get(Movie, movie_id)
         subs = _movie_subs(m) if m else []
         entry = next((x for x in subs if x["file"] == file), None)
-        path = settings.media_dir / movie_id / file
-        if not entry or not path.exists():
+        if not entry:
             raise HTTPException(404, "No such subtitle.")
-        try:
-            vtt = subtitles.shift_vtt(path.read_text(encoding="utf-8"), offset)
-        except subtitles.SubtitleError as e:
-            raise HTTPException(400, str(e)) from e
-        entry["file"] = _write_vtt(movie_id, vtt)
-        path.unlink(missing_ok=True)
+        if delay is not None:
+            entry["delay"] = round(delay, 3)
+        if label is not None and label.strip():
+            entry["label"] = label.strip()[:60]
         m.subtitles = json.dumps(subs)
     await _subs_changed(movie_id, subs)
     return {"subtitles": subs}

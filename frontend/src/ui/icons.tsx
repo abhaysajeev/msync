@@ -25,6 +25,7 @@ export const Chat = (p: P) => <I {...p}><path d="M4 5h16v11H9l-5 4z" /></I>;
 export const Expand = (p: P) => <I {...p}><path d="M4 9V4h5" /><path d="M20 9V4h-5" /><path d="M4 15v5h5" /><path d="M20 15v5h-5" /></I>;
 export const Shrink = (p: P) => <I {...p}><path d="M9 4v5H4" /><path d="M15 4v5h5" /><path d="M9 20v-5H4" /><path d="M15 20v-5h5" /></I>;
 export const Captions = (p: P) => <I {...p}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M10 10.5a2 2 0 1 0 0 3" /><path d="M16.5 10.5a2 2 0 1 0 0 3" /></I>;
+export const Check = (p: P) => <I {...p}><path d="M5 12.5l4.5 4.5L19 7.5" /></I>;
 export const Close = (p: P) => <I {...p}><path d="M6 6l12 12M18 6L6 18" /></I>;
 export const Copy = (p: P) => <I {...p}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a1 1 0 0 1 1-1h9" /></I>;
 export const Upload = (p: P) => <I {...p}><path d="M12 15V4" /><path d="M7.5 8.5L12 4l4.5 4.5" /><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" /></I>;

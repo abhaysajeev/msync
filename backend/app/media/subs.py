@@ -90,7 +90,3 @@ def to_vtt(data: bytes, filename: str, offset: float = 0.0) -> str:
             return srt_or_vtt_to_vtt((Path(d) / "out.vtt").read_text(encoding="utf-8"), offset)
     raise SubtitleError("Use an .srt, .vtt, .ass or .ssa subtitle file.")
 
-
-def shift_vtt(text: str, offset: float) -> str:
-    """Re-time an existing VTT (for nudging subtitles that run early or late)."""
-    return srt_or_vtt_to_vtt(text, offset)

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import * as tus from "tus-js-client";
 import { api, type Movie, type RoomInfo } from "../lib/api";
 import { navigate } from "../router";
-import { ago, clock, codecLabel, gb, initial, length, mbps, personTint, resolution } from "./format";
+import { ago, clock, codecLabel, fmtDelay, gb, initial, length, mbps, personTint, resolution } from "./format";
 import { Copy, More, Upload } from "./icons";
 import { Page } from "./Shell";
 
@@ -432,25 +432,25 @@ function SubtitlePanel({ m, onClose, onChange }: { m: Movie; onClose: () => void
         <strong style={{ fontWeight: 500 }}>Subtitles for {m.title}</strong>
         <button class="text-btn muted" onClick={onClose}>Done</button>
       </div>
-      {m.subtitles.length === 0 && <p class="muted">None yet. Add an .srt, .vtt or .ass file; each viewer picks theirs with the CC button.</p>}
+      {m.subtitles.length === 0 && <p class="muted">None yet. Add an .srt, .vtt or .ass file; each viewer picks theirs from the CC menu in the player.</p>}
       {m.subtitles.map((sub) => (
         <div class="row" style={{ minHeight: "44px", padding: "4px 0" }}>
           <div class="grow">
             <div class="name">{sub.label}</div>
             <div class="line2">{sub.lang !== "und" ? sub.lang.toUpperCase() : "Language not set"}</div>
           </div>
-          <span class="faint hide-sm" style={{ fontSize: "12px" }}>Timing</span>
+          <span class="faint num" style={{ fontSize: "12px" }} title="Shared timing for both viewers">{fmtDelay(sub.delay ?? 0)}</span>
           <button class="btn sm" disabled={!!busy} title="Show every line half a second earlier"
-            onClick={() => act(sub.file, () => api.post(`/api/movies/${m.id}/subtitles/${sub.file}/shift`, { offset: -0.5 }))}>−0.5 s</button>
+            onClick={() => act(sub.file, () => api.patch(`/api/movies/${m.id}/subtitles/${sub.file}`, { delay: Math.round(((sub.delay ?? 0) - 0.5) * 1000) / 1000 }))}>−0.5 s</button>
           <button class="btn sm" disabled={!!busy} title="Show every line half a second later"
-            onClick={() => act(sub.file, () => api.post(`/api/movies/${m.id}/subtitles/${sub.file}/shift`, { offset: 0.5 }))}>+0.5 s</button>
+            onClick={() => act(sub.file, () => api.patch(`/api/movies/${m.id}/subtitles/${sub.file}`, { delay: Math.round(((sub.delay ?? 0) + 0.5) * 1000) / 1000 }))}>+0.5 s</button>
           <button class="text-btn neg" disabled={!!busy}
             onClick={() => confirm(`Remove the subtitle "${sub.label}"?`) && act(sub.file, () => api.del(`/api/movies/${m.id}/subtitles/${sub.file}`))}>Remove</button>
         </div>
       ))}
       <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
         <button class="btn sm" disabled={!!busy} onClick={() => fileRef.current?.click()}>{busy === "add" ? "Adding…" : "Add subtitle file"}</button>
-        <span class="faint" style={{ fontSize: "12px" }}>Lines too early or late? Nudge them with the timing buttons; open players update straight away.</span>
+        <span class="faint" style={{ fontSize: "12px" }}>Lines too early or late? Nudge the timing here, or finer in the player's CC menu. Open players update straight away.</span>
         <input ref={fileRef} type="file" accept=".srt,.vtt,.ass,.ssa,text/vtt,application/x-subrip" class="sr-only"
           onChange={(e) => {
             const f = (e.target as HTMLInputElement).files?.[0];

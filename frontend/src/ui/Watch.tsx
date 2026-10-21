@@ -9,8 +9,9 @@ import { Player } from "../player/player";
 import { navigate } from "../router";
 import { SyncEngine, type EngineView } from "../sync/engine";
 import { prebufferNeeded } from "../sync/prebuffer";
-import { clock, hhmm, initial, length, mbps, personTint } from "./format";
+import { clock, fmtDelay, hhmm, initial, length, mbps, personTint } from "./format";
 import * as Ic from "./icons";
+import { loadStyle, saveStyle, SubtitleLayer, SubtitleSheet, type SubStyle } from "./Subtitles";
 
 interface ChatMsg {
   id: number;
@@ -75,10 +76,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   const [idle, setIdle] = useState(false);
   const [fs, setFs] = useState(false);
   const [hud, setHud] = useState(() => new URLSearchParams(location.search).has("debug"));
-  const [subIdx, setSubIdx] = useState(-1);
-  // VLC-style subtitle delay, per viewer: positive shows lines later
-  const [subDelay, setSubDelay] = useState(0);
-  const appliedDelay = useRef(new WeakMap<TextTrack, number>());
+  const [subsOpen, setSubsOpen] = useState(false);
   const [filmMuted, setFilmMuted] = useState(false);
   const chatOpenRef = useRef(chatOpen);
   chatOpenRef.current = chatOpen;
@@ -281,13 +279,14 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
         case "ArrowLeft": e.preventDefault(); stepSeek(-10); break;
         case "ArrowRight": e.preventDefault(); stepSeek(10); break;
         case "f": void toggleFs(); break;
-        case "c": setChatOpen((o) => !o); setUnread(0); break;
+        case "c": setChatOpen((o) => !o); setSubsOpen(false); setUnread(0); break;
+        case "Escape": setSubsOpen(false); break;
         case "m": call.toggleMic(); break;
         case "v": call.toggleCam(); break;
         case "d": setHud((h) => !h); break;
         // VLC's keys: G earlier, H later, 50 ms a press
-        case "g": if (subIdx >= 0) changeDelay(subDelay - 0.05); break;
-        case "h": if (subIdx >= 0) changeDelay(subDelay + 0.05); break;
+        case "g": if (subFile) changeDelay(subDelay - 0.05, true); break;
+        case "h": if (subFile) changeDelay(subDelay + 0.05, true); break;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -295,79 +294,92 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   });
 
   // ---- subtitles ----
+  const movieId = sess.movie?.id;
   const [subs, setSubs] = useState(sess.movie?.subtitles ?? []);
+  const fileKey = `msync:subfile:${movieId}`;
+  const [subFile, setSubFile] = useState<string | null>(() => {
+    const f = store.get(fileKey);
+    return f && subs.some((s) => s.file === f) ? f : null;
+  });
   useEffect(() => socket.on("subtitles", (m) => {
-    if (m.movie !== sess.movie?.id) return;
+    if (m.movie !== movieId) return;
     setSubs(m.subtitles);
-    setSubIdx((i) => (i >= m.subtitles.length ? -1 : i));
+    setSubFile((f) => (f && m.subtitles.some((s: { file: string }) => s.file === f) ? f : null));
   }), [socket]);
+  const pickSub = (f: string | null) => {
+    setSubFile(f);
+    if (f) store.set(fileKey, f);
+    else store.del(fileKey);
+  };
+  // the <track>s only load cues; SubtitleLayer draws them
   useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    Array.from(v.textTracks).forEach((t, i) => (t.mode = i === subIdx ? "showing" : "disabled"));
-  }, [subIdx, joined, subs]);
+    videoRef.current?.querySelectorAll<HTMLTrackElement>("track").forEach((el) => {
+      el.track.mode = el.dataset.file === subFile ? "hidden" : "disabled";
+    });
+  }, [subFile, subs, joined]);
 
-  const delayKey = (file?: string) => `msync:subdelay:${sess.movie?.id}:${file}`;
-  // each subtitle remembers its own delay on this device
+  // timing: the host's shared delay, unless this device has its own (VLC style).
+  // A personal value remembers the shared value it was based on; once the host saves a new
+  // shared value, everyone follows that again.
+  const shared = subs.find((s) => s.file === subFile)?.delay ?? 0;
+  const delayKey = `msync:subdelay:${movieId}:${subFile}`;
+  const [mine, setMine] = useState<number | null>(null);
   useEffect(() => {
-    const f = subs[subIdx]?.file;
-    let d = 0;
+    let v: number | null = null;
     try {
-      d = f ? Number(localStorage.getItem(delayKey(f)) || 0) : 0;
+      const o = JSON.parse(store.get(delayKey) || "null");
+      if (o && o.base === shared && Number.isFinite(o.d)) v = o.d;
     } catch {
-      /* private mode */
+      /* old or broken value */
     }
-    setSubDelay(Number.isFinite(d) ? d : 0);
-  }, [subIdx, subs]);
+    setMine(v);
+  }, [subFile, shared]);
+  const subDelay = mine ?? shared;
 
-  // shift the cues in place: instant, no reload, playback untouched
-  const applyDelay = useCallback(() => {
-    const t = videoRef.current?.textTracks[subIdx];
-    if (!t || !t.cues || t.cues.length === 0) return; // not loaded yet: the load event re-runs this
-    const delta = subDelay - (appliedDelay.current.get(t) ?? 0);
-    if (Math.abs(delta) < 1e-6) return;
-    for (const c of Array.from(t.cues)) {
-      c.startTime += delta;
-      c.endTime += delta;
-    }
-    appliedDelay.current.set(t, subDelay);
-  }, [subIdx, subDelay]);
-  useEffect(applyDelay, [applyDelay, joined]);
-  useEffect(() => {
-    const els = videoRef.current?.querySelectorAll("track") ?? [];
-    els.forEach((e) => e.addEventListener("load", applyDelay));
-    return () => els.forEach((e) => e.removeEventListener("load", applyDelay));
-  }, [applyDelay, subs]);
-
-  const changeDelay = (next: number) => {
-    const f = subs[subIdx]?.file;
-    if (!f) return;
+  const changeDelay = (next: number, announce = false) => {
+    if (!subFile) return;
     const d = Math.round(next * 1000) / 1000;
-    setSubDelay(d);
-    try {
-      localStorage.setItem(delayKey(f), String(d));
-    } catch {
-      /* private mode */
+    if (Math.abs(d - shared) < 0.0005) {
+      setMine(null);
+      store.del(delayKey);
+    } else {
+      setMine(d);
+      store.set(delayKey, JSON.stringify({ d, base: shared }));
     }
-    flash(`Subtitle delay: ${fmtDelay(d)}`);
+    if (announce) flash(`Subtitle delay ${fmtDelay(d)}`);
   };
 
+  const [savingSub, setSavingSub] = useState(false);
   const saveDelayForBoth = async () => {
-    const f = subs[subIdx]?.file;
-    if (!f || !subDelay || !movie) return;
+    if (!subFile || !movieId) return;
+    setSavingSub(true);
     try {
-      await api.post(`/api/movies/${movie.id}/subtitles/${f}/shift`, { offset: subDelay });
-      try {
-        localStorage.removeItem(delayKey(f));
-      } catch {
-        /* fine */
-      }
-      flash("Subtitle timing saved for both of you");
-      // the server re-sends the list with a new file name; its fresh track starts at 0 delay
+      await api.patch(`/api/movies/${movieId}/subtitles/${subFile}`, { delay: subDelay });
+      store.del(delayKey);
+      flash(`Subtitle timing ${fmtDelay(subDelay)} saved for both of you`);
     } catch (e: any) {
       flash(e.message);
+    } finally {
+      setSavingSub(false);
     }
   };
+
+  const [subStyle, setSubStyle] = useState<SubStyle>(loadStyle);
+  const changeStyle = (st: SubStyle) => {
+    setSubStyle(st);
+    saveStyle(st);
+  };
+
+  // the subtitles and the settings sheet sit above the controls while those are showing
+  const barRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const bar = barRef.current;
+    const stage = stageRef.current;
+    if (!bar || !stage || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => stage.style.setProperty("--bar-h", `${bar.offsetHeight}px`));
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, [joined, !!sess.movie]);
 
   const peer = members.find((m) => m.id !== sess.you.id);
   const me = members.find((m) => m.id === sess.you.id);
@@ -400,17 +412,20 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
     }
   }
 
-  const showControls = !idle || !joined || ev?.phase !== "playing" || chatOpen;
+  const showControls = !idle || !joined || ev?.phase !== "playing" || chatOpen || subsOpen;
 
   return (
     <div ref={stageRef} class={`stage${showControls ? "" : " idle"}${chatOpen ? " chat-open" : ""}${fullscreenSupported() ? "" : " immersive"}`}
       onPointerMove={wake} onPointerDown={wake}>
       <video ref={videoRef} class="film" playsInline poster={movie?.poster ?? undefined}
         muted={filmMuted}>
-        {subs.map((s) => <track key={s.file} kind="subtitles" src={`/media/${movie!.id}/${s.file}`} srcLang={s.lang} label={s.label} />)}
+        {subs.map((s) => <track key={s.file} data-file={s.file} kind="subtitles" src={`/media/${movie!.id}/${s.file}`} srcLang={s.lang} label={s.label} />)}
       </video>
 
-      <div class="hit" onClick={(e) => {
+      {joined && <SubtitleLayer videoRef={videoRef} file={subFile} delay={subDelay} style={subStyle} preview={subsOpen} />}
+
+      <div class="hit" onClick={() => {
+        if (subsOpen) return setSubsOpen(false);
         if (matchMedia("(pointer: coarse)").matches) {
           setIdle((i) => !i);
           if (idle) wake();
@@ -444,7 +459,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
 
       {/* bottom bar */}
       {joined && movie && (
-        <div class="bar-bottom">
+        <div ref={barRef} class="bar-bottom">
           <Scrub duration={duration} pos={pendingSeek.current?.to ?? pos} buffered={playerRef.current?.bufferedRanges() ?? []}
             onSeek={(t) => engine?.seek(t)} />
           {duration > 0 && members.filter((m) => m.connected).length > 1 && (
@@ -464,27 +479,9 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
             <button class="cbtn" aria-label="Forward 10 seconds" onClick={() => stepSeek(10)}><Ic.Fwd10 /></button>
             <span class="time"><strong>{clock(pos)}</strong> / {clock(duration)}</span>
             <span class="grow" />
-            {subs.length > 0 && (
-              <button class={`cbtn${subIdx >= 0 ? "" : " dim"}`} aria-label={subIdx >= 0 ? `Subtitles: ${subs[subIdx].label}` : "Subtitles off"}
-                title={subIdx >= 0 ? subs[subIdx].label : "Subtitles off"}
-                onClick={() => {
-                  const next = subIdx + 1 >= subs.length ? -1 : subIdx + 1;
-                  setSubIdx(next);
-                  flash(next >= 0 ? `Subtitles: ${subs[next].label}` : "Subtitles off");
-                }}><Ic.Captions /></button>
-            )}
-            {subIdx >= 0 && (
-              <span class="subdelay" role="group" aria-label="Subtitle delay">
-                <button class="cbtn" aria-label="Subtitles earlier by 0.1 seconds" onClick={() => changeDelay(subDelay - 0.1)}>−</button>
-                <button class="delay-val num" title="Subtitle delay. Tap to reset. Keys: G earlier, H later" onClick={() => changeDelay(0)}>
-                  {fmtDelay(subDelay)}
-                </button>
-                <button class="cbtn" aria-label="Subtitles later by 0.1 seconds" onClick={() => changeDelay(subDelay + 0.1)}>+</button>
-                {sess.you.admin && subDelay !== 0 && (
-                  <button class="save hide-sm" onClick={() => void saveDelayForBoth()}>Save for both</button>
-                )}
-              </span>
-            )}
+            <button class={`cbtn${subFile ? " on" : ""}`} aria-label="Subtitle settings" aria-expanded={subsOpen}
+              title={subFile ? subs.find((x) => x.file === subFile)?.label : "Subtitles off"}
+              onClick={() => { setSubsOpen(!subsOpen); setChatOpen(false); }}><Ic.Captions /></button>
             <button class="cbtn" aria-label={filmMuted ? "Unmute the film" : "Mute the film"} onClick={() => setFilmMuted(!filmMuted)}>
               {filmMuted ? <Ic.VolumeOff /> : <Ic.Volume />}
             </button>
@@ -501,7 +498,7 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
             {!call.started && (
               <button class="cbtn" aria-label="Start the call" onClick={() => void call.start({ camera: true, mic: true })}><Ic.Cam /></button>
             )}
-            <button class="cbtn" aria-label={chatOpen ? "Close chat" : "Open chat"} onClick={() => { setChatOpen(!chatOpen); setUnread(0); }}>
+            <button class="cbtn" aria-label={chatOpen ? "Close chat" : "Open chat"} onClick={() => { setChatOpen(!chatOpen); setSubsOpen(false); setUnread(0); }}>
               <Ic.Chat />{unread > 0 && !chatOpen && <span class="badge">{unread}</span>}
             </button>
             <button class="cbtn" aria-label={fs ? "Exit full screen" : "Full screen"} onClick={() => void toggleFs()}>
@@ -509,6 +506,12 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
             </button>
           </div>
         </div>
+      )}
+
+      {subsOpen && joined && (
+        <SubtitleSheet subs={subs} file={subFile} onPick={pickSub} delay={subDelay} shared={shared}
+          onDelay={(d) => changeDelay(d)} onSaveShared={() => void saveDelayForBoth()} saving={savingSub}
+          admin={sess.you.admin} style={subStyle} onStyle={changeStyle} onClose={() => setSubsOpen(false)} />
       )}
 
       {chatOpen && <ChatPanel chat={chat} you={sess.you.id} typing={typing} onClose={() => setChatOpen(false)}
@@ -522,10 +525,30 @@ function Stage({ sess, code, reload }: { sess: RoomSession; code: string; reload
   );
 }
 
-function fmtDelay(d: number): string {
-  if (Math.abs(d) < 0.0005) return "Sub 0.00 s";
-  return `Sub ${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(2)} s`;
-}
+// localStorage that never throws (private mode, blocked storage)
+const store = {
+  get(k: string): string | null {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  },
+  set(k: string, v: string): void {
+    try {
+      localStorage.setItem(k, v);
+    } catch {
+      /* fine */
+    }
+  },
+  del(k: string): void {
+    try {
+      localStorage.removeItem(k);
+    } catch {
+      /* fine */
+    }
+  },
+};
 
 function reasonName(reason: string): string {
   const i = reason.indexOf(":");

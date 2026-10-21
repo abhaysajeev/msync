@@ -31,6 +31,14 @@ export const api = {
   del: <T>(p: string) => request<T>("DELETE", p),
 };
 
+/** delay: shared timing in seconds set by the host, positive shows every line later */
+export interface Subtitle {
+  lang: string;
+  label: string;
+  file: string;
+  delay?: number;
+}
+
 export interface Movie {
   id: string;
   title: string;
@@ -47,7 +55,7 @@ export interface Movie {
   avg_mbps: number | null;
   note: string | null;
   error: string | null;
-  subtitles: { lang: string; label: string; file: string }[];
+  subtitles: Subtitle[];
   audio_tracks: { index: number; codec: string; channels: number; lang: string; title: string; default: boolean }[];
   created_at: number;
   started_at: number | null;

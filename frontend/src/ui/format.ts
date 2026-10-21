@@ -58,3 +58,9 @@ export function codecLabel(c?: string | null): string {
   if (!c) return "";
   return ({ h264: "H.264", hevc: "HEVC", av1: "AV1", vp9: "VP9", mpeg2video: "MPEG-2", vc1: "VC-1", aac: "AAC", ac3: "AC-3", eac3: "E-AC-3", dts: "DTS", truehd: "TrueHD", flac: "FLAC", opus: "Opus", mp3: "MP3" } as Record<string, string>)[c] ?? c.toUpperCase();
 }
+
+/** subtitle delay: +0.50 s means every line shows half a second later */
+export function fmtDelay(d: number): string {
+  if (Math.abs(d) < 0.0005) return "0.00 s";
+  return `${d > 0 ? "+" : "−"}${Math.abs(d).toFixed(2)} s`;
+}
