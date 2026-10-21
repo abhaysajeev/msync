@@ -26,11 +26,10 @@ export function Login({ onDone }: { onDone: () => void }) {
       <form class="solo-card" onSubmit={submit}>
         <div>
           <Mark size={30} />
-          <h1 style={{ marginTop: "18px" }}>Sign in to host</h1>
-          <p class="lead">Upload films, open rooms and let your friend in. Guests join from an invite link and need no password.</p>
+          <h1 style={{ marginTop: "18px" }}>Sign in</h1>
         </div>
         <div class="field">
-          <label for="pw">Host password</label>
+          <label for="pw">Password</label>
           <input id="pw" class="input" type="password" autoComplete="current-password" value={pw}
             onInput={(e) => setPw((e.target as HTMLInputElement).value)} autoFocus />
           {err && <span class="form-error" role="alert">{err}</span>}

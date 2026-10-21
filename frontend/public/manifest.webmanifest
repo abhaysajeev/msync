@@ -1,7 +1,7 @@
 {
   "name": "msync",
   "short_name": "msync",
-  "description": "Private watch party for two.",
+  "description": "msync",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",
